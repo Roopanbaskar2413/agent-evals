@@ -1,3 +1,3 @@
-2026-10-14  M1 baseline: llama3.2, no tools, no database
-overall 0/31, easy 0/15, medium 0/9, hard 0/7
-failure mode: confident guessed numbers (e.g. 850000 for a count of 7), many 0.0
+2026-10-14  M1b baseline: llama3.2, schema in prompt, one SQL query, no loop
+overall 15/31 (48%), easy 15/15, medium 0/9, hard 0/7
+failures: 8 missing join (city), 2 MONTH() unsupported, 2 date filter returns 0, 4 category filter dropped
