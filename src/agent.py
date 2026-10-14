@@ -5,7 +5,6 @@ from src.db_tools import SCHEMA, run_query
 from src.grading import load_questions, is_correct, summarize
 
 MODEL = "llama3.2"
-RESULTS = "data/results_agent.jsonl"
 MAX_STEPS = 8
 NUDGE = "Call submit_answer with your final numeric answer now."
 
@@ -158,6 +157,13 @@ def main():
                    help="replace smart/curly quotes with a plain quote before running SQL")
     args = p.parse_args()
 
+    suffix = ""
+    if args.nudge:
+        suffix += "_nudge"
+    if args.normalize_quotes:
+        suffix += "_normalizequotes"
+    results_path = f"data/results_agent{suffix}.jsonl"
+
     results = []
     for q in load_questions():
         out = answer(q["question"], nudge=args.nudge, normalize=args.normalize_quotes)
@@ -166,7 +172,7 @@ def main():
         status = "OK " if row["correct"] else "BAD"
         note = row["error"] or f"got={out['got']} expected={q['expected']} steps={out['steps_used']}"
         print(f"{q['id']:>2} {status} {note} nudges={out['nudges']}")
-    with open(RESULTS, "w") as f:
+    with open(results_path, "w") as f:
         for row in results:
             f.write(json.dumps(row) + "\n")
     print()

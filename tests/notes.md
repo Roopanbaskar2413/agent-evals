@@ -325,3 +325,38 @@ Per-id prediction:
   the model not calling submit_answer after step 4's correct result.
 Expected net effect if prediction holds: 12/31 -> 15/31 (Q20, Q22, Q24 fixed,
 Q12 unchanged just faster, Q21 unchanged). Not run yet.
+
+Trajectory-level prediction (added before running): Q20, Q22, Q24 -- the
+step-2 query executes and returns a number (high confidence); whether the
+final answer is graded correct is uncertain and separate.
+
+RESULT (data/results_agent_normalizequotes.jsonl): 12/31, unchanged from the
+flags-off baseline. Every changed id was in the predicted set {12,20,21,22,24}
+-- no surprises outside the prediction this time.
+  Q12: correct->correct, steps 3->2 (as predicted exactly).
+  Q20, Q22, Q24: BAD->BAD. Trajectory prediction held exactly -- step 2 now
+    runs and returns the precise right number (20232.22, 9772.15, 15603.82)
+    -- but the top-level correctness prediction was wrong: they don't become
+    correct, because fixing the quote bug just exposes the pre-existing
+    submit_answer decimal-truncation bug underneath (got 20232.0, 9772.0,
+    15603.0). One bug traded for another on the same 3 questions, net zero.
+  Q21: BAD->BAD as predicted, but the mechanism changed more than expected --
+    previously ended via "no tool call" (text reply after a correct query),
+    now ends via a real submit_answer call that's truncated (got=21055.0).
+    Same root bug (decimal truncation) as Q20/22/24, just reached through a
+    different path than predicted.
+
+Scan for near-tolerance-boundary misses (abs(got-expected) in [0.005,0.01]),
+across all 10 result files on disk (data/results_*.jsonl and
+data/scratch/results_*.jsonl), grader untouched: zero matches. The earlier
+Q21 case (diff ~=0.01000000000022, just above this range) no longer exists
+in any currently saved file -- it was overwritten when the plain-text
+fallback was removed from agent.py.
+
+Conclusion: --normalize-quotes fixes exactly what it targets (the quote
+character), proving the ran_out_of_steps category's cause was correctly
+diagnosed, but it does not raise the score by itself, because
+wrong_after_recovery (decimal truncation at submit_answer) is a second,
+independent bug sitting right behind it on the same questions. Fixing both
+quote normalization AND the truncation bug together is the next logical
+step, not a new M4 attempt on a fresh failure type.
