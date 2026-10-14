@@ -8,11 +8,16 @@ An evaluation harness for a small agent that answers questions about a SQLite sh
 
 ## How to run
 
-Requires Python, `pip install ollama pydantic`, and Ollama running with `llama3.2` pulled (`ollama pull llama3.2`).
+Setup:
+- `python3 -m venv .venv`
+- `source .venv/bin/activate`
+- `pip install ollama pydantic`
+
+Also requires Ollama running with `llama3.2` pulled (`ollama pull llama3.2`).
 
 - `make demo` rebuilds the database and the 31 dev questions and runs the one-shot baseline; it ends by printing `Overall: 15/31 = 48%` with the easy/medium/hard breakdown (easy 15/15, medium 0/9, hard 0/7).
 - `make report` regenerates the tables below from the saved results in `data/`.
-- Agent configurations run with `python -m src.agent` plus flags (`--normalize-quotes`, `--final-from-result`, `--precision-only`, `--questions <file>`).
+- Agent configurations run with `python -m src.agent` plus flags (`--normalize-quotes`, `--final-from-result`, `--precision-only`, `--questions <file>`). Needs the venv active.
 
 ## Results
 
