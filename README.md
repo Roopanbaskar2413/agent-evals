@@ -1,20 +1,22 @@
 # agent-evals
 
+Result: wrapping a 3B model in a tool-using agent loop did not beat one-shot SQL (24/60 vs 22/60, within noise) and cost about 9x the tokens; the useful part is the eval that shows why.
+
 ## What this is
 
 An evaluation harness for a small agent that answers questions about a SQLite shop database (40 customers, 300 orders), using a local 3B model (llama3.2 through Ollama). The point is the measuring, not the agent. The correct answer to every question is computed by running SQL, so no model grades another model. All numbers below are generated from the saved result files by `make report`.
 
 ## How to run
 
-Requires Python, `pip install ollama pydantic`, and Ollama running with `llama3.2` pulled.
+Requires Python, `pip install ollama pydantic`, and Ollama running with `llama3.2` pulled (`ollama pull llama3.2`).
 
-- `make demo` rebuilds the database and the 31 dev questions and runs the one-shot baseline.
+- `make demo` rebuilds the database and the 31 dev questions and runs the one-shot baseline; it ends by printing `Overall: 15/31 = 48%` with the easy/medium/hard breakdown (easy 15/15, medium 0/9, hard 0/7).
 - `make report` regenerates the tables below from the saved results in `data/`.
 - Agent configurations run with `python -m src.agent` plus flags (`--normalize-quotes`, `--final-from-result`, `--precision-only`, `--questions <file>`).
 
 ## Results
 
-Two question sets. The 31 dev questions (15 easy, 9 medium, 7 hard) are the ones I looked at while building and fixing. The 60 held-out questions (26 easy, 16 medium, 18 hard) come from the same templates with different values. I ran them once, with the configurations and the rules written down in advance. They test robustness to new values, not new kinds of questions. "Tokens per correct" is total tokens spent divided by correct answers.
+Two question sets. The 31 dev questions (15 easy, 9 medium, 7 hard) are the ones I looked at while building and fixing. The 60 held-out questions (26 easy, 16 medium, 18 hard) come from the same templates with different values. Each configuration was run once against the held-out set for the tables below, with the configurations and the rules written down in advance; one configuration was re-run later to check how stable the results were. They test robustness to new values, not new kinds of questions. "Tokens per correct" is total tokens spent divided by correct answers.
 
 ### Overall score
 
@@ -75,7 +77,7 @@ Two question sets. The 31 dev questions (15 easy, 9 medium, 7 hard) are the ones
 | normalize-quotes+final-from-result+precision-only | held-out | 7 | 11 | 8 | 9 | 1 |
 
 - The best agent configuration scored 24/60 on held-out against 22/60 for the one-shot SQL baseline. A two-question gap on 60 is within noise, so I don't claim the agent beats the baseline. It used about 9x the input tokens (1,226 against 137 per question) and about 7.6x the tokens per correct answer (3,316 against 439).
-- The fixes worked at the level they were aimed at: decimal-truncation failures fell from 5 to 1 on held-out, and easy questions rose from 16/26 to 19/26.
+- The fixes worked at the level they were aimed at: wrong_after_recovery failures (mostly truncated decimals) fell from 5 to 1 on held-out, and easy questions rose from 16/26 to 19/26.
 - The dev-set gain on medium questions (0/9 to 5/9) did not replicate: medium is 0/16 on held-out in every configuration.
 - Re-running one configuration three times gave 20/60 each time, although two questions changed trajectory between runs without changing correctness.
 
@@ -83,13 +85,13 @@ Two question sets. The 31 dev questions (15 easy, 9 medium, 7 hard) are the ones
 
 - **No database:** the model alone scored 0/31, with confident guesses (850000 for an answer of 7).
 - **The first agent was worse than one-shot SQL:** it scored 12/31 against 15/31. An inspector I wrote sorted its 19 failures into five types: no_submit_text (5), ran_out_of_steps (4), gave_up_after_errors (3), silent_wrong (4), wrong_after_recovery (3).
-- **My grader was too lenient.** The agent pulled a number out of plain text when the model forgot to call `submit_answer`. A prediction I had written down failed on one question (Q11), which exposed it. Removing the fallback and re-scoring from the saved trajectories moved the agent from 13/31 to 12/31. From then on only the submitted number counted.
-- **Two bugs stacked on the same questions.** The model wrote curly quotes in SQL (“Chennai”), which SQLite rejected, and then repeated the same query up to eight times. Converting them to straight quotes fixed the query but not the score, because behind it the model passed its final number with the decimals cut off (20232.22 became 20232.0, 15603.82 became 15603.0; truncated, not rounded). In all 53 saved cases the decimals were dropped.
-- **Fixing the truncation took three tries.** Asking again for the number, showing the whole conversation, recovered 0 of 7: the model copied its own truncated answer. A small isolated test showed the model copies decimals fine when it sees only the question and the query result (7 of 7). So I asked for the final number in a separate structured-output call from only those two things. That fixed all 7 but broke three easy counts (Q4, Q6, Q13), where the model returned 1.0 for results like `[(77,)]`; I don't know why. The --precision-only flag skips the second call whenever the query result is already a whole number, since there are no decimals to lose, and that repaired all three. Two earlier attempts (a tool that submits the last query result, and a shorter prompt) lowered the score and were reverted, because changing the prompt or tool list changes the input to every question.
+- **My grader was too lenient.** The agent pulled a number out of plain text when the model forgot to call `submit_answer`. A prediction I had written down failed on one question (id 11 in data/questions.jsonl), which exposed it. Removing the fallback and re-scoring from the saved trajectories moved the agent from 13/31 to 12/31. From then on only the submitted number counted.
+- **Two bugs stacked on the same questions.** The model wrote curly quotes in SQL (“Chennai”), which SQLite rejected, and then repeated the same query up to eight times. Converting them to straight quotes fixed the query but not the score, because behind it the model passed its final number with the decimals cut off (20232.22 became 20232.0, 15603.82 became 15603.0; truncated, not rounded). Across 8 saved snapshots of agent runs taken while debugging this, the model submitted an answer to one of the 7 dev questions with a decimal expected value 53 times in total, and every one of those 53 had its decimals dropped.
+- **Fixing the truncation took three tries.** Asking again for the number, showing the whole conversation, recovered 0 of 7: the model copied its own truncated answer. A small isolated test showed the model copies decimals fine when it sees only the question and the query result (7 of 7). So I asked for the final number in a separate structured-output call from only those two things. That fixed all 7 but broke three easy counts (ids 4, 6, 13 in data/questions.jsonl), where the model returned 1.0 for results like `[(77,)]`; I don't know why. The `--precision-only` flag skips the second call whenever the query result is already a whole number, since there are no decimals to lose, and that repaired all three. Two earlier attempts (a tool that submits the last query result, and a shorter prompt) lowered the score and were reverted, because changing the prompt or tool list changes the input to every question.
 - **The held-out set showed what is still unsolved.** Five templates (month filters, two-filter counts, filtered joins) score 0 in every configuration, including the one-shot baseline. The schema text never says the data is from 2026, so the model wrote `LIKE '2023-%'` and got 0.0. It also used `MONTH()`, which SQLite doesn't have, and it dropped one of two filters (four different delivered-category questions all returned 161.0).
 
 ## Limits and next steps
 
-Limits: one small model; one database and one set of templates; samples of 31 and 60; difficulty labels are mine; the quote fix was not exercised on the held-out set because no curly quotes appeared there.
+Limits: one small model; one database and one set of templates; samples of 31 and 60; difficulty labels are mine; the quote fix was not exercised on the held-out set because no curly quotes appeared there; the fixes were developed on the dev set; temperature 0 is not fully deterministic (two held-out questions changed trajectory between identical runs).
 
 Next: put the year range and a SQLite date hint into the schema and test on a fresh second held-out set; run the same harness with a larger local model; find out why the second call returns 1.0 for some counts.
