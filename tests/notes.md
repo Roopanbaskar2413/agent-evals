@@ -360,3 +360,209 @@ wrong_after_recovery (decimal truncation at submit_answer) is a second,
 independent bug sitting right behind it on the same questions. Fixing both
 quote normalization AND the truncation bug together is the next logical
 step, not a new M4 attempt on a fresh failure type.
+
+2026-10-14  Read-only check across all 8 saved results_agent*.jsonl files
+(158 total submit_answer calls): the model NEVER used the declared argument
+name "number" -- only "a" (105x) or "x" (53x), 0 times "number". Of the 53
+submits where the expected answer has a nonzero decimal part, 0 kept any
+decimal digit in the submitted value (all 53 dropped it).
+CAVEAT: this 0/53 is incomplete, not just surprising. data/results_agent_m2b
+.jsonl (which had one confirmed exception -- Q3 via the old nudge path kept
+full precision, 291.521724137931) was deleted when agent_m2b.py's behavior
+was folded into --nudge. The scan is accurate for what's on disk now, but
+the full history had at least one counterexample that's no longer in it.
+
+2026-10-14  Added --structured-final to agent.py (off by default). When on,
+AND the loop ended via a real submit_answer call (used_submit_tool), one
+extra ollama.chat call is made after the loop: full transcript + a user
+message asking for the final numeric answer, format=FinalAnswer
+(pydantic, number: float), temperature 0. That value overwrites got.
+Verified flags-all-off still reproduces strict M2 exactly: reran with no
+flags, 0/31 diffs against the pre-refactor saved results.
+FinalAnswer/pydantic were already a project dependency (used in baseline.py)
+-- no new dependency added.
+
+Ids that called submit_answer in the saved M2c results (data/results_agent_
+normalizequotes.jsonl) -- only these 26 may change under --structured-final,
+since the extra call is gated on used_submit_tool:
+[1,2,3,4,5,6,7,8,9,10,12,13,14,15,17,18,19,20,21,22,23,24,28,29,30,31]
+(11, 16, 25, 26, 27 never called submit_answer in M2c and cannot change.)
+
+Per-id prediction, split into what's known (does the right number appear in
+some query result already) vs what's uncertain (will the re-ask grade
+correct) -- NOT RUN YET:
+
+Group A -- already correct, integer expected, right number already in a
+query result (known=yes): 1,4,5,6,7,8,9,10,12,13,14,15.
+  Uncertain: re-asking should return the same integer -- predict no change,
+  still correct. Low risk since there's no decimal to lose.
+
+Group B -- currently BAD via decimal truncation, right number IS present in
+a query result in the trajectory (known=yes): 2,3,20,21,22,23,24.
+  Uncertain: whether a second, separate structured-output call (JSON
+  schema forcing number:float, not a free-form tool-call argument) makes
+  the model restate the number with full precision this time. This is a
+  genuinely different generation path than submit_answer's tool-call
+  argument, so unlike the earlier failed prompt-wording fixes, this has a
+  real mechanical reason to behave differently -- but still uncertain.
+  Predict: some or all of these flip to correct; cannot predict how many
+  without running it.
+
+Group C -- currently BAD, right number was NEVER in any query result in the
+trajectory (known=no -- there is nothing correct to recover):
+17,18,19,28,29,30,31.
+  Uncertain in principle, but predict with high confidence: stay incorrect.
+  Re-asking for "the final numeric answer" cannot produce a number the
+  model never actually computed; at best it restates the same wrong number
+  already in the transcript (0.0 for 17-19, 242.63... for 28-31).
+
+Expected net effect if prediction holds: Group A unchanged (12 correct),
+Group C unchanged (7 incorrect), Group B is the only open question --
+net could range from 12/31 (no change) to 19/31 (all of Group B fixed).
+Not run yet.
+
+RESULT (data/results_agent_normalizequotes_structuredfinal.jsonl): 12/31
+(39%), easy 12/15, medium 0/9, hard 0/7 -- identical to the 12/31 baseline.
+Prediction held on scope: no Group A regressions, no id outside the 26
+eligible changed at all.
+Group B (the open question) resolved to the worst case: 0/7 recovered.
+Every one of 2,3,20,21,22,23,24 restates the SAME truncated value through
+the structured_final call as it already had from submit_answer:
+  id  query_value         structured_final  correct
+  2   39064.32            39064.0           False
+  3   291.521724137931    291.0             False
+  20  20232.22            20232.0           False
+  21  21055.43            21055.0           False
+  22  9772.15             9772.0            False
+  23  9913.59             9913.0            False
+  24  15603.82            15603.0           False
+Cause (visible in the full transcript the structured_final call sees): the
+model re-derives its answer from its own prior submit_answer statement
+(already truncated) rather than looking back at the original run_sql
+result earlier in the same transcript, even though the schema explicitly
+allows a float and nothing prevents it from reading further back.
+
+Token cost: average tokens per question went DOWN, not up --
+tokens_in 1153.4->1111.2, tokens_out 85.7->68.3 vs the flags-off baseline.
+The extra structured_final call does cost tokens on the 19 ids where it
+fires, but --normalize-quotes lets Q20/22/24 finish in 3 steps instead of 8
+(no more burning the full step cap on repeated quote failures), and that
+savings outweighs the extra call's cost across the full 31.
+
+Conclusion: --structured-final does not help at all once a wrong number is
+already committed via submit_answer -- the model treats its own prior
+tool-call argument as ground truth and restates it, rather than re-reading
+the original query result still present in the same context. The real fix
+has to happen before or during the submit_answer call itself, not after it.
+M2d reverts to being an interesting negative result, not a step forward.
+Not committed -- pending review.
+
+2026-10-14  Isolated precision test (data/scratch/test_isolated_structured.py,
+not committed): one ollama.chat call per id, ONLY "{question}\nQuery result:
+{result}" as the user message, format=Answer(number:float), temperature 0 --
+no transcript, no prior submit_answer call in context at all. All 7 of
+2,3,20,21,22,23,24 returned the exact query value, decimals intact
+(e.g. 291.521724137931 -> 291.521724137931). Confirms the model CAN carry
+full precision through structured output; the full-pipeline failure
+(--structured-final, 0/7) is specifically caused by the prior truncated
+submit_answer statement still sitting in the transcript, not a general
+inability to handle decimals via structured output.
+Corrected token comparison (M2c alone vs M2c+structured-final, not vs the
+flags-off baseline): --structured-final itself costs +248.1 tokens_in,
++6.0 tokens_out per question on average, isolated from --normalize-quotes'
+own token savings.
+
+2026-10-14  Added --final-from-result to agent.py (off by default, mutually
+exclusive with --structured-final -- enforced in main(), p.error() if both
+given). When on, and the loop ended via a real submit_answer call, one
+ollama.chat call is made with ONLY {"role":"user","content": f"{question}\n
+Query result: {last_sql_output}"} -- no system prompt, no transcript, none
+of the model's own submit_answer call -- format=FinalAnswer, temperature 0.
+That value becomes got. last_sql_output tracks the string of the most
+recent run_sql call that did NOT error (updated unconditionally in the
+loop, used only when this flag is on). If no run_sql ever succeeded, got is
+set to None directly (no model call made) per spec.
+Verified flags-all-off still reproduces strict M2 exactly: reran with no
+flags, 0/31 diffs against the pre-refactor saved results.
+
+Prediction (written before running --normalize-quotes --final-from-result),
+same A/B/C groups as the --structured-final prediction, with confidence:
+
+Group A (1,4,5,6,7,8,9,10,12,13,14,15) -- already correct, integer expected.
+  Prediction: HIGH confidence these stay correct, following directly from
+  the isolated precision test (the model reliably returns the right number
+  when given only the question + a clean query result, no prior-answer
+  bias in context). BUT stated plainly because it was asked for: Group A
+  COULD regress here in a way it structurally could not under
+  --structured-final. --structured-final only ever fires after submit_answer
+  and uses the full transcript (including the model's own already-correct
+  integer answer), so it had little room to go wrong on these. 
+  --final-from-result discards that transcript entirely and re-derives the
+  answer from a bare, out-of-context {question, query_result} pair -- a
+  genuinely different (and harder, since it has zero conversational
+  support) task for the model each time, run separately per question, so a
+  regression on one or more of these 12 is possible, just not predicted.
+Group B (2,3,20,21,22,23,24) -- currently BAD via decimal truncation, right
+  number present in the trajectory's run_sql result.
+  Prediction: HIGH confidence these become correct. This is exactly the
+  isolated precision test's setup, id for id (same questions, same query
+  results) -- that test already showed 7/7 exact matches under this
+  precise input shape.
+Group C (17,18,19,28,29,30,31) -- right number never appeared in any
+  run_sql result at all.
+  Prediction: HIGH confidence these stay incorrect. last_sql_output for
+  these ids holds the WRONG number (0 for 17-19, 242.63... for 28-31,
+  the same silently-wrong result the agent already computed) -- there is
+  nothing for --final-from-result to recover, since it only ever re-derives
+  from whatever run_sql last returned, right or wrong.
+
+Expected net effect if prediction holds: 12/31 -> 19/31 (Group B fully
+fixed, A and C unchanged). Not run yet.
+
+RESULT (data/results_agent_normalizequotes_finalfromresult.jsonl): 16/31
+(52%), easy 11/15, medium 5/9, hard 0/7 -- up from the 12/31 baseline, but
+not the predicted 19/31.
+
+Group B: prediction CONFIRMED exactly -- all 7/7 recovered, exact matches:
+  id  query_value          final_from_result    correct
+  2   39064.32             39064.32             True
+  3   291.521724137931     291.521724137931     True
+  20  20232.22             20232.22             True
+  21  21055.43             21055.43             True
+  22  9772.15              9772.15              True
+  23  9913.59              9913.59              True
+  24  15603.82             15603.82             True
+
+Group A: prediction's stated risk CONFIRMED -- 3 of 12 regressed:
+  id=4  got=1.0  expected=77
+  id=6  got=1.0  expected=67
+  id=13 got=1.0  expected=9
+All three return the identical hallucinated value 1.0, regardless of the
+actual question -- the same pattern as the earlier Q25/26/27 "guess 3 for
+everything" failure mode, now showing up here because stripping the
+transcript removes the conversational grounding that made these simple
+count questions trivial in context. Re-deriving from a bare
+{question, query_result} pair is a harder task than it looks for a 3B
+model when the question has no surrounding context.
+
+Group C: unchanged as predicted, 0/7 (17,18,19,28,29,30,31) -- nothing to
+recover since last_sql_output held the wrong number for all of these.
+
+No id outside the 26 eligible changed. Net: 12->16 (+4), not the predicted
++7, because the 3 Group A regressions partially offset the 7 Group B gains.
+
+Token cost vs --normalize-quotes-only (the correct baseline for isolating
+this flag's cost): tokens_in +36.4, tokens_out +9.5 per question on average
+-- far cheaper than --structured-final's +248.1/+6.0, because this call
+sends a short two-line prompt instead of resending the whole transcript.
+
+Conclusion: --final-from-result is the first change in this whole M2
+series that raises the strict score, and cheaply. But it has a real,
+measured cost (3 new regressions on previously-easy questions) that a
+narrower before/after on just the targeted ids would have hidden -- this is
+exactly why the "report ids outside the eligible set" and "state Group A
+could regress" instructions mattered. Not committed -- pending review.
+Open question for next step: can Group A's regression be avoided (e.g. by
+only applying --final-from-result when the submitted answer actually has
+a decimal, since Group A's correct integer answers never needed re-deriving
+in the first place)?

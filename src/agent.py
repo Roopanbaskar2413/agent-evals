@@ -1,8 +1,15 @@
 import argparse
 import json
 import ollama
+from pydantic import BaseModel
 from src.db_tools import SCHEMA, run_query
 from src.grading import load_questions, is_correct, summarize
+
+FINAL_ANSWER_PROMPT = "What is your final numeric answer? Reply with just the number."
+
+
+class FinalAnswer(BaseModel):
+    number: float
 
 MODEL = "llama3.2"
 MAX_STEPS = 8
@@ -67,7 +74,8 @@ def normalize_quotes(sql: str) -> str:
     return sql
 
 
-def answer(question: str, nudge: bool = False, normalize: bool = False) -> dict:
+def answer(question: str, nudge: bool = False, normalize: bool = False,
+           structured_final: bool = False, final_from_result: bool = False) -> dict:
     messages = [
         {"role": "system", "content": SYSTEM},
         {"role": "user", "content": question},
@@ -79,6 +87,8 @@ def answer(question: str, nudge: bool = False, normalize: bool = False) -> dict:
     tokens_out = 0
     steps_used = 0
     nudges = 0
+    used_submit_tool = False
+    last_sql_output = None
 
     for step in range(1, MAX_STEPS + 1):
         steps_used = step
@@ -118,6 +128,7 @@ def answer(question: str, nudge: bool = False, normalize: bool = False) -> dict:
                 trajectory.append({"step": step, "tool": name, "input": args, "output": error})
                 break
             got = float(value)
+            used_submit_tool = True
             trajectory.append({"step": step, "tool": name, "input": args, "output": got})
             break
 
@@ -127,6 +138,7 @@ def answer(question: str, nudge: bool = False, normalize: bool = False) -> dict:
                 sql = normalize_quotes(sql)
             try:
                 output = run_query(sql)
+                last_sql_output = str(output)
             except Exception as e:
                 output = f"{type(e).__name__}: {e}"
         else:
@@ -137,6 +149,40 @@ def answer(question: str, nudge: bool = False, normalize: bool = False) -> dict:
 
     if got is None and error is None:
         error = "max steps reached without submit_answer"
+
+    if structured_final and used_submit_tool:
+        messages.append({"role": "user", "content": FINAL_ANSWER_PROMPT})
+        response = ollama.chat(
+            model=MODEL,
+            messages=messages,
+            format=FinalAnswer.model_json_schema(),
+            options={"temperature": 0},
+        )
+        tokens_in += response["prompt_eval_count"]
+        tokens_out += response["eval_count"]
+        parsed = FinalAnswer.model_validate_json(response["message"]["content"])
+        got = parsed.number
+        trajectory.append({"step": steps_used + 1, "tool": "structured_final", "input": None, "output": got})
+
+    if final_from_result and used_submit_tool:
+        if last_sql_output is None:
+            got = None
+            trajectory.append({"step": steps_used + 1, "tool": "final_from_result",
+                                "input": {"query_result": None}, "output": None})
+        else:
+            content = f"{question}\nQuery result: {last_sql_output}"
+            response = ollama.chat(
+                model=MODEL,
+                messages=[{"role": "user", "content": content}],
+                format=FinalAnswer.model_json_schema(),
+                options={"temperature": 0},
+            )
+            tokens_in += response["prompt_eval_count"]
+            tokens_out += response["eval_count"]
+            parsed = FinalAnswer.model_validate_json(response["message"]["content"])
+            got = parsed.number
+            trajectory.append({"step": steps_used + 1, "tool": "final_from_result",
+                                "input": {"query_result": last_sql_output}, "output": got})
 
     return {
         "got": got,
@@ -155,18 +201,32 @@ def main():
                    help="one-time nudge to call submit_answer if a step has no tool call")
     p.add_argument("--normalize-quotes", action="store_true",
                    help="replace smart/curly quotes with a plain quote before running SQL")
+    p.add_argument("--structured-final", action="store_true",
+                   help="after a submit_answer call, re-ask for the number via structured output")
+    p.add_argument("--final-from-result", action="store_true",
+                   help="after a submit_answer call, re-derive the number from only the "
+                        "question and the last successful run_sql result (no transcript)")
     args = p.parse_args()
+
+    if args.structured_final and args.final_from_result:
+        p.error("--structured-final and --final-from-result are mutually exclusive")
 
     suffix = ""
     if args.nudge:
         suffix += "_nudge"
     if args.normalize_quotes:
         suffix += "_normalizequotes"
+    if args.structured_final:
+        suffix += "_structuredfinal"
+    if args.final_from_result:
+        suffix += "_finalfromresult"
     results_path = f"data/results_agent{suffix}.jsonl"
 
     results = []
     for q in load_questions():
-        out = answer(q["question"], nudge=args.nudge, normalize=args.normalize_quotes)
+        out = answer(q["question"], nudge=args.nudge, normalize=args.normalize_quotes,
+                     structured_final=args.structured_final,
+                     final_from_result=args.final_from_result)
         row = {**q, **out, "correct": is_correct(out["got"], q["expected"])}
         results.append(row)
         status = "OK " if row["correct"] else "BAD"
