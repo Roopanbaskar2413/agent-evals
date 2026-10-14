@@ -286,3 +286,42 @@ no_submit_text count goes from 4 to 5 (picks up Q11), all other 4 categories
 unchanged.
 OFFICIAL BASELINES from here on: M2 = 12/31, M2b = 14/31 (both strict,
 submit_answer-only scoring).
+
+2026-10-14  Refactored agent.py to take --nudge and --normalize-quotes flags
+(both off by default, action="store_true"). --nudge reimplements exactly
+what agent_m2b.py did (one-time nudge on no-tool-call, continue instead of
+break). --normalize-quotes replaces curly/smart quotes (U+201C/201D/2018/
+2019) with a plain ASCII quote in the SQL string before it's run.
+Verified both flags off reproduces the strict M2 baseline exactly: 12/31,
+0/31 fields differ (got and correct compared row by row against the saved
+strict M2 results, not just the aggregate score).
+Verified --nudge alone reproduces agent_m2b.py's 14/31 exactly: 0/31 fields
+differ against the old results_agent_m2b.jsonl.
+Deleted src/agent_m2b.py and data/results_agent_m2b.jsonl -- the --nudge
+flag is now the only place that behavior lives.
+
+2026-10-14  M2c prediction (written before running, --normalize-quotes only,
+--nudge off): computed the ids whose saved run_sql arguments actually
+contain a curly/smart quote character: [12, 20, 21, 22, 24].
+Only these 5 ids may change. All other 26 should produce byte-identical
+got/correct to the current flags-off baseline (12/31), same reasoning as the
+M2b prediction: normalize_quotes() only runs inside the run_sql branch, so
+a question whose trajectory never contains a smart quote is byte-for-byte
+unaffected.
+Per-id prediction:
+- Q12: already correct (got=7.0) via self-correction on step 2 after a
+  curly-quote error on step 1. Normalizing should let step 1 succeed
+  directly -- predict stays correct, fewer steps (3 -> 2), no score change.
+- Q20, Q22, Q24 (ran_out_of_steps, pure curly-quote loops, never once tried
+  a straight quote in 8 attempts): predict these become correct, since the
+  only known blocker was the quote character itself and the underlying join
+  logic was already right.
+- Q21: already contains both a curly-quote failure (step 1) AND a
+  straight-quote success (step 4, got the exact right number 21055.43) in
+  its saved trajectory. Normalizing quotes shouldn't change this path at all
+  since step 1's failure already gets bypassed by the model's own retry --
+  predict no change (still BAD, no tool call, same as the current flags-off
+  baseline), since this row's problem was never the quote character, it was
+  the model not calling submit_answer after step 4's correct result.
+Expected net effect if prediction holds: 12/31 -> 15/31 (Q20, Q22, Q24 fixed,
+Q12 unchanged just faster, Q21 unchanged). Not run yet.

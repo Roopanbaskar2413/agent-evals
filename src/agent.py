@@ -1,3 +1,4 @@
+import argparse
 import json
 import ollama
 from src.db_tools import SCHEMA, run_query
@@ -6,6 +7,9 @@ from src.grading import load_questions, is_correct, summarize
 MODEL = "llama3.2"
 RESULTS = "data/results_agent.jsonl"
 MAX_STEPS = 8
+NUDGE = "Call submit_answer with your final numeric answer now."
+
+SMART_QUOTES = {"“": "'", "”": "'", "‘": "'", "’": "'"}
 
 SYSTEM = f"""You answer questions about a shop database by running SQL queries.
 {SCHEMA}
@@ -56,7 +60,15 @@ def get_arg(args: dict, key: str):
     return None
 
 
-def answer(question: str) -> dict:
+def normalize_quotes(sql: str) -> str:
+    """Replace typographic/smart quotes with a plain ASCII quote, since
+    SQLite only recognizes the plain one as a string delimiter."""
+    for smart, straight in SMART_QUOTES.items():
+        sql = sql.replace(smart, straight)
+    return sql
+
+
+def answer(question: str, nudge: bool = False, normalize: bool = False) -> dict:
     messages = [
         {"role": "system", "content": SYSTEM},
         {"role": "user", "content": question},
@@ -67,6 +79,7 @@ def answer(question: str) -> dict:
     tokens_in = 0
     tokens_out = 0
     steps_used = 0
+    nudges = 0
 
     for step in range(1, MAX_STEPS + 1):
         steps_used = step
@@ -85,7 +98,13 @@ def answer(question: str) -> dict:
 
         if not tool_calls:
             content = msg.get("content") or ""
-            error = "no tool call"
+            if nudge and nudges == 0:
+                nudges += 1
+                messages.append({"role": "user", "content": NUDGE})
+                trajectory.append({"step": step, "tool": None, "input": None,
+                                    "output": f"no tool call, nudged | text={content!r}"})
+                continue
+            error = "no tool call" + (" (after nudge)" if nudges else "")
             trajectory.append({"step": step, "tool": None, "input": None, "output": f"{error} | text={content!r}"})
             break
 
@@ -105,6 +124,8 @@ def answer(question: str) -> dict:
 
         if name == "run_sql":
             sql = get_arg(args, "sql") or ""
+            if normalize:
+                sql = normalize_quotes(sql)
             try:
                 output = run_query(sql)
             except Exception as e:
@@ -122,6 +143,7 @@ def answer(question: str) -> dict:
         "got": got,
         "error": error,
         "steps_used": steps_used,
+        "nudges": nudges,
         "trajectory": trajectory,
         "tokens_in": tokens_in,
         "tokens_out": tokens_out,
@@ -129,14 +151,21 @@ def answer(question: str) -> dict:
 
 
 def main():
+    p = argparse.ArgumentParser()
+    p.add_argument("--nudge", action="store_true",
+                   help="one-time nudge to call submit_answer if a step has no tool call")
+    p.add_argument("--normalize-quotes", action="store_true",
+                   help="replace smart/curly quotes with a plain quote before running SQL")
+    args = p.parse_args()
+
     results = []
     for q in load_questions():
-        out = answer(q["question"])
+        out = answer(q["question"], nudge=args.nudge, normalize=args.normalize_quotes)
         row = {**q, **out, "correct": is_correct(out["got"], q["expected"])}
         results.append(row)
         status = "OK " if row["correct"] else "BAD"
         note = row["error"] or f"got={out['got']} expected={q['expected']} steps={out['steps_used']}"
-        print(f"{q['id']:>2} {status} {note}")
+        print(f"{q['id']:>2} {status} {note} nudges={out['nudges']}")
     with open(RESULTS, "w") as f:
         for row in results:
             f.write(json.dumps(row) + "\n")
