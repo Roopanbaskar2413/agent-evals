@@ -1,3 +1,4 @@
+import argparse
 import json
 import ollama
 from pydantic import BaseModel
@@ -5,6 +6,7 @@ from src.db_tools import SCHEMA, run_query
 from src.grading import load_questions, is_correct, summarize
 
 MODEL = "llama3.2"
+QUESTIONS = "data/questions.jsonl"
 RESULTS = "data/results_baseline_sql.jsonl"
 
 SYSTEM = f"""You write one SQLite SELECT query that answers the question.
@@ -43,8 +45,12 @@ def answer(question: str) -> dict:
 
 
 def main():
+    p = argparse.ArgumentParser()
+    p.add_argument("--questions", default=QUESTIONS, help="path to the questions .jsonl file")
+    args = p.parse_args()
+
     results = []
-    for q in load_questions():
+    for q in load_questions(args.questions):
         out = answer(q["question"])
         row = {**q, **out, "correct": is_correct(out["got"], q["expected"])}
         results.append(row)

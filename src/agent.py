@@ -1,5 +1,6 @@
 import argparse
 import json
+import re
 import ollama
 from pydantic import BaseModel
 from src.db_tools import SCHEMA, run_query
@@ -12,6 +13,7 @@ class FinalAnswer(BaseModel):
     number: float
 
 MODEL = "llama3.2"
+QUESTIONS = "data/questions.jsonl"
 MAX_STEPS = 8
 NUDGE = "Call submit_answer with your final numeric answer now."
 
@@ -74,8 +76,19 @@ def normalize_quotes(sql: str) -> str:
     return sql
 
 
+def is_whole_number(result_str: str) -> bool:
+    """True if the first number in a run_sql result string has no
+    fractional part (e.g. '[(77,)]' -> True, '[(291.52,)]' -> False)."""
+    match = re.search(r"-?\d+\.?\d*", result_str or "")
+    if not match:
+        return False
+    value = float(match.group())
+    return value == int(value)
+
+
 def answer(question: str, nudge: bool = False, normalize: bool = False,
-           structured_final: bool = False, final_from_result: bool = False) -> dict:
+           structured_final: bool = False, final_from_result: bool = False,
+           precision_only: bool = False) -> dict:
     messages = [
         {"role": "system", "content": SYSTEM},
         {"role": "user", "content": question},
@@ -169,6 +182,10 @@ def answer(question: str, nudge: bool = False, normalize: bool = False,
             got = None
             trajectory.append({"step": steps_used + 1, "tool": "final_from_result",
                                 "input": {"query_result": None}, "output": None})
+        elif precision_only and is_whole_number(last_sql_output):
+            trajectory.append({"step": steps_used + 1, "tool": "final_from_result",
+                                "input": {"query_result": last_sql_output, "skipped": "whole number"},
+                                "output": got})
         else:
             content = f"{question}\nQuery result: {last_sql_output}"
             response = ollama.chat(
@@ -206,6 +223,10 @@ def main():
     p.add_argument("--final-from-result", action="store_true",
                    help="after a submit_answer call, re-derive the number from only the "
                         "question and the last successful run_sql result (no transcript)")
+    p.add_argument("--precision-only", action="store_true",
+                   help="with --final-from-result, skip the re-derivation when the query "
+                        "result is already a whole number")
+    p.add_argument("--questions", default=QUESTIONS, help="path to the questions .jsonl file")
     args = p.parse_args()
 
     if args.structured_final and args.final_from_result:
@@ -220,13 +241,16 @@ def main():
         suffix += "_structuredfinal"
     if args.final_from_result:
         suffix += "_finalfromresult"
+    if args.precision_only:
+        suffix += "_precisiononly"
     results_path = f"data/results_agent{suffix}.jsonl"
 
     results = []
-    for q in load_questions():
+    for q in load_questions(args.questions):
         out = answer(q["question"], nudge=args.nudge, normalize=args.normalize_quotes,
                      structured_final=args.structured_final,
-                     final_from_result=args.final_from_result)
+                     final_from_result=args.final_from_result,
+                     precision_only=args.precision_only)
         row = {**q, **out, "correct": is_correct(out["got"], q["expected"])}
         results.append(row)
         status = "OK " if row["correct"] else "BAD"

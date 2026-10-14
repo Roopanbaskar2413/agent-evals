@@ -566,3 +566,79 @@ Open question for next step: can Group A's regression be avoided (e.g. by
 only applying --final-from-result when the submitted answer actually has
 a decimal, since Group A's correct integer answers never needed re-deriving
 in the first place)?
+
+2026-10-14  Added --precision-only to agent.py (off by default). With
+--final-from-result, skips the re-derivation call when the last successful
+run_sql result is already a whole number (is_whole_number(), a regex +
+int-equality check on the raw result string) -- keeps the original
+submit_answer value in that case instead of risking it on a bare
+{question, query_result} re-ask. Verified flags-all-off still reproduces
+strict M2 exactly: 0/31 diffs. Sanity-checked on the DEV set (not the
+held-out set) that this actually fixes the earlier regression:
+--normalize-quotes --final-from-result --precision-only -> 19/31 (easy
+14/15, medium 5/9, hard 0/7) -- Q4, Q6, Q13 all correct again, Group B
+(2,3,20,21,22,23,24) still 7/7 fixed. Best dev-set score of the whole M2
+series. Not committed yet.
+
+Added --questions to all three runners (baseline.py, baseline_sql.py,
+agent.py), default data/questions.jsonl, so any question file can be
+selected without editing code.
+
+Built data/questions_heldout.jsonl (src/make_questions_heldout.py): 60
+questions from the same templates as make_questions.py, using parameter
+values never used in the dev set (customer ids outside {3,12,27}; months
+outside {1,4,8,11}; fresh (city,category) pairs for the hard join+2-filter
+template; status='pending' introduced as the varied second dimension
+wherever a dimension was already exhausted in the dev set, e.g. "average
+pending {category} orders" in place of "average delivered {category}
+orders"). One dev template (customers-by-city, easy) has no held-out
+variant: the customers table only has id/name/city, every city is already
+used in the dev set, and there is no second column to vary -- deliberately
+not replicated, documented in the script's own comment. 26 easy / 16
+medium / 18 hard, same database (shop.db, seed 42), expected answers
+computed by real SQL exactly as in make_questions.py.
+
+PRE-REGISTRATION -- held-out evaluation, written before running it.
+(Corrected to 5 configurations -- the original 4-config version above
+collapsed two distinct configs, --final-from-result alone and
+--final-from-result --precision-only, into one; both are run and reported
+separately below so precision-only's own effect is visible on held-out
+data too, not just assumed from the dev-set result.)
+
+Five configurations to run on data/questions_heldout.jsonl, via --questions:
+  1. M1b   : python -m src.baseline_sql --questions data/questions_heldout.jsonl
+  2. M2    : python -m src.agent --questions data/questions_heldout.jsonl
+             (strict M2, all flags off -- the already-established 12/31 dev
+             baseline's exact configuration, no change)
+  3. normalize-quotes only:
+             python -m src.agent --normalize-quotes
+             --questions data/questions_heldout.jsonl
+  4. normalize-quotes + final-from-result:
+             python -m src.agent --normalize-quotes --final-from-result
+             --questions data/questions_heldout.jsonl
+  5. normalize-quotes + final-from-result + precision-only:
+             python -m src.agent --normalize-quotes --final-from-result
+             --precision-only --questions data/questions_heldout.jsonl
+
+What will be reported for each of the 5 configs, on the held-out set:
+  - overall score and the easy/medium/hard breakdown
+  - for the 4 agent.py configs (M2 and the 3 flag combinations): the
+    failure-type breakdown from inspect_trajectories.py
+  - average tokens_in/tokens_out per question, for the 4 agent.py configs
+  - the full comparison table: dev-set score vs held-out-set score, for
+    all 5 configs side by side, since the real question this run answers
+    is whether the dev-set ranking holds up on data none of the fixes were
+    built against.
+
+Commitment, stated before seeing any held-out result: nothing gets tuned,
+re-prompted, or re-fixed based on what the held-out run shows. No new flag,
+no prompt edit, no threshold change in response to a held-out failure.
+Whatever breaks on the held-out set is written up in the README as a
+finding -- e.g. "normalize-quotes + final-from-result generalizes to new
+cities but not to new months" is a result to report, not a bug to patch. This is the whole point of holding
+the set out: M4's repeated pattern in this project (fix one thing, measure
+full effect, sometimes revert) was legitimate because every fix was judged
+against the same dev set it was built on, with full before/after visibility.
+Held-out evaluation is a different kind of claim -- it's evidence the
+dev-set gains are real improvements, not dev-set-specific overfitting --
+and that claim is only honest if nothing is adjusted afterward. Not run yet.

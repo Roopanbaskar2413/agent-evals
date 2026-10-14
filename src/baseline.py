@@ -1,9 +1,11 @@
+import argparse
 import json
 import ollama
 from pydantic import BaseModel
 from src.grading import load_questions, is_correct, summarize
 
 MODEL = "llama3.2"
+QUESTIONS = "data/questions.jsonl"
 RESULTS = "data/results_baseline.jsonl"
 
 SYSTEM = "Answer the question with a single number. If you do not know, give your best guess."
@@ -32,8 +34,12 @@ def ask(question: str) -> dict:
 
 
 def main():
+    p = argparse.ArgumentParser()
+    p.add_argument("--questions", default=QUESTIONS, help="path to the questions .jsonl file")
+    args = p.parse_args()
+
     results = []
-    for q in load_questions():
+    for q in load_questions(args.questions):
         out = ask(q["question"])
         row = {**q, **out, "correct": is_correct(out["got"], q["expected"])}
         results.append(row)
