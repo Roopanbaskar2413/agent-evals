@@ -642,3 +642,176 @@ against the same dev set it was built on, with full before/after visibility.
 Held-out evaluation is a different kind of claim -- it's evidence the
 dev-set gains are real improvements, not dev-set-specific overfitting --
 and that claim is only honest if nothing is adjusted afterward. Not run yet.
+
+RESULT -- held-out evaluation (data/questions_heldout.jsonl, 60 questions).
+Numbers only, no interpretation, no changes made as a result of this run.
+Output files: data/results_baseline_sql_heldout.jsonl,
+data/results_agent_heldout.jsonl,
+data/results_agent_normalizequotes_heldout.jsonl,
+data/results_agent_normalizequotes_finalfromresult_heldout.jsonl,
+data/results_agent_normalizequotes_finalfromresult_precisiononly_heldout.jsonl.
+(Note: baseline_sql.py and agent.py write to a fixed filename per flag
+combo regardless of --questions, so each held-out run first overwrote the
+same-named dev-set file; every one was copied out under a _heldout name
+and the original dev-set file restored via git checkout immediately after,
+before the next config ran. All 5 dev-set tracked files confirmed clean via
+git status after. The one untracked dev file,
+results_agent_normalizequotes_finalfromresult_precisiononly.jsonl, was
+manually backed up to data/scratch/ first and restored from that copy.)
+
+TABLE 1 -- held-out score, breakdown, and average tokens per configuration:
+  M1b                                                 22/60  easy 21/26  medium 0/16  hard 1/18   tokens_in=136.7   tokens_out=24.2
+  M2 (strict)                                         20/60  easy 16/26  medium 0/16  hard 4/18   tokens_in=1220.1  tokens_out=99.3
+  normalize-quotes                                    20/60  easy 16/26  medium 0/16  hard 4/18   tokens_in=1220.1  tokens_out=99.3
+  normalize-quotes+final-from-result                  19/60  easy 13/26  medium 0/16  hard 6/18   tokens_in=1260.5  tokens_out=107.4
+  normalize-quotes+final-from-result+precision-only   24/60  easy 19/26  medium 0/16  hard 5/18   tokens_in=1225.5  tokens_out=101.0
+
+TABLE 2 -- per-difficulty, dev vs held-out, each configuration:
+  M1b
+    easy    dev 15/15   held-out 21/26
+    medium  dev 0/9     held-out 0/16
+    hard    dev 0/7     held-out 1/18
+  M2 (strict)
+    easy    dev 12/15   held-out 16/26
+    medium  dev 0/9     held-out 0/16
+    hard    dev 0/7     held-out 4/18
+  normalize-quotes
+    easy    dev 12/15   held-out 16/26
+    medium  dev 0/9     held-out 0/16
+    hard    dev 0/7     held-out 4/18
+  normalize-quotes+final-from-result
+    easy    dev 11/15   held-out 13/26
+    medium  dev 5/9     held-out 0/16
+    hard    dev 0/7     held-out 6/18
+  normalize-quotes+final-from-result+precision-only
+    easy    dev 14/15   held-out 19/26
+    medium  dev 5/9     held-out 0/16
+    hard    dev 0/7     held-out 5/18
+
+TABLE 3 -- failure-type breakdown (inspect_trajectories.classify(), applied
+read-only to each held-out results file), for the 4 agent.py configurations:
+  M2 (strict): failures 40/60
+    no_submit_text: 7, ran_out_of_steps: 11, gave_up_after_errors: 8,
+    silent_wrong: 9, wrong_after_recovery: 5
+  normalize-quotes: failures 40/60
+    no_submit_text: 7, ran_out_of_steps: 11, gave_up_after_errors: 8,
+    silent_wrong: 9, wrong_after_recovery: 5
+  normalize-quotes+final-from-result: failures 41/60
+    no_submit_text: 6, ran_out_of_steps: 11, gave_up_after_errors: 9,
+    silent_wrong: 9, wrong_after_recovery: 6
+  normalize-quotes+final-from-result+precision-only: failures 36/60
+    no_submit_text: 7, ran_out_of_steps: 11, gave_up_after_errors: 8,
+    silent_wrong: 9, wrong_after_recovery: 1
+
+Results not committed -- pending review, per instruction to stop before
+committing results.
+
+2026-10-14  Filename fix (item 1): added questions_tag() to agent.py,
+baseline.py, baseline_sql.py -- the results filename now includes a tag
+derived from --questions when it differs from the default dev set (e.g.
+data/questions_heldout.jsonl -> _heldout appended), and stays exactly the
+same filename as before when --questions is not passed (tag == ""). This
+is why the held-out run above needed a manual rescue/restore step; it
+won't be needed for future runs.
+Verified: flags-off on the dev set still writes to data/results_agent.jsonl
+(unchanged path) and gives 12/31, 0/31 fields different from the pre-fix
+saved copy.
+
+2026-10-14  Read-only follow-up analysis (item 2), numbers only, no code
+changes, no tuning:
+
+(a) Smart-quote scan + cmp, held-out M2 vs +quotes:
+  M2 heldout: ids with a smart quote (U+2018/2019/201C/201D) in any
+    run_sql argument: [] (0)
+  +quotes heldout: same scan: [] (0)
+  cmp data/results_agent_heldout.jsonl data/results_agent_normalizequotes_
+    heldout.jsonl: differ at char 7507, line 16.
+  Full id-level diff (not just first byte): exactly 2 ids differ, 16 and
+    18 -- both still incorrect in both files (M2 id16 got=None/id18
+    got=161.0; +quotes id16 got=161.0/id18 got=None). No smart quotes
+    involved in either differing row.
+
+(b) Re-score data/results_agent_normalizequotes_finalfromresult_
+    precisiononly.jsonl (dev) using is_correct(got, expected) directly:
+    19/31. Confirmed.
+
+(c) Paired counts (question-id matched), C2 = normalize-quotes+final-
+    from-result+precision-only:
+  dev:
+    C2 vs M1b: both_correct=14  only_C2=5  only_M1b=1  neither=11
+    C2 vs M2:  both_correct=12  only_C2=7  only_M2=0   neither=12
+  held-out:
+    C2 vs M1b: both_correct=20  only_C2=4  only_M1b=2  neither=34
+    C2 vs M2:  both_correct=20  only_C2=4  only_M2=0   neither=36
+
+(d) Oracle router (correct if M1b OR C2 is correct, per question):
+  dev:      overall 20/31   easy 15/15  medium 5/9   hard 0/7
+  held-out: overall 26/60   easy 21/26  medium 0/16  hard 5/18
+
+(e) Per-template scores, held-out, all 5 configs (10 templates: 14
+    customer_id_count, 4 category_delivered_count, 4 category_pending_count,
+    4 status_only_twists, 8 month_count, 8 month_sum, 5 city_pending_join,
+    5 city_category_delivered_join, 4 city_category_pending_join,
+    4 avg_pending_category):
+  M1b:
+    customer_id_count 14/14, category_delivered_count 0/4,
+    category_pending_count 3/4, status_only_twists 4/4, month_count 0/8,
+    month_sum 0/8, city_pending_join 0/5, city_category_delivered_join 0/5,
+    city_category_pending_join 0/4, avg_pending_category 1/4
+  M2 (strict):
+    customer_id_count 14/14, category_delivered_count 0/4,
+    category_pending_count 1/4, status_only_twists 1/4, month_count 0/8,
+    month_sum 0/8, city_pending_join 4/5, city_category_delivered_join 0/5,
+    city_category_pending_join 0/4, avg_pending_category 0/4
+  normalize-quotes:
+    customer_id_count 14/14, category_delivered_count 0/4,
+    category_pending_count 1/4, status_only_twists 1/4, month_count 0/8,
+    month_sum 0/8, city_pending_join 4/5, city_category_delivered_join 0/5,
+    city_category_pending_join 0/4, avg_pending_category 0/4
+  normalize-quotes+final-from-result:
+    customer_id_count 8/14, category_delivered_count 0/4,
+    category_pending_count 1/4, status_only_twists 4/4, month_count 0/8,
+    month_sum 0/8, city_pending_join 5/5, city_category_delivered_join 0/5,
+    city_category_pending_join 0/4, avg_pending_category 1/4
+  normalize-quotes+final-from-result+precision-only:
+    customer_id_count 14/14, category_delivered_count 0/4,
+    category_pending_count 1/4, status_only_twists 4/4, month_count 0/8,
+    month_sum 0/8, city_pending_join 4/5, city_category_delivered_join 0/5,
+    city_category_pending_join 0/4, avg_pending_category 1/4
+
+(f) Tokens per correct answer ((tokens_in+tokens_out summed over all rows)
+    / count correct), dev and held-out:
+  dev:
+    M1b: total=4913 correct=15 tokens/correct=327.5
+    M2: total=38411 correct=12 tokens/correct=3200.9
+    normalize-quotes: total=28685 correct=12 tokens/correct=2390.4
+    normalize-quotes+final-from-result: total=30106 correct=16 tokens/correct=1881.6
+    normalize-quotes+final-from-result+precision-only: total=29358 correct=19 tokens/correct=1545.2
+  held-out:
+    M1b: total=9658 correct=22 tokens/correct=439.0
+    M2: total=79161 correct=20 tokens/correct=3958.1
+    normalize-quotes: total=79161 correct=20 tokens/correct=3958.1
+    normalize-quotes+final-from-result: total=82074 correct=19 tokens/correct=4319.7
+    normalize-quotes+final-from-result+precision-only: total=79590 correct=24 tokens/correct=3316.2
+
+(g) Held-out run_sql arguments ending in a dangling operator (=, LIKE, IN,
+    "(", case-insensitive, trailing whitespace stripped), all 4 agent
+    configs, with the difficulty tier of the affected question ids:
+  M2 (strict): 26 occurrences, unique ids {15,16,17,32}
+    easy ids {15,16,17} (category_delivered_count template, "...WHERE
+      category = ? AND status =" truncated before the literal)
+    medium id {32} (month_count template, "...SUBSTR(order_date,5,2) ="
+      truncated -- same shape as dev-set Q16)
+    all occurrences end in "=" specifically; none end in LIKE, IN, or "("
+  normalize-quotes: 26 occurrences, unique ids {15,17,18,32} (same two
+    templates/tiers as M2, slightly different id set)
+  normalize-quotes+final-from-result: 26 occurrences, unique ids
+    {15,16,17,32} (same pattern)
+  normalize-quotes+final-from-result+precision-only: 26 occurrences,
+    unique ids {15,16,17,32} (same pattern)
+  Across all 4 configs: the dangling-operator bug only ever appears in
+  these same two templates (category_delivered_count/easy and
+  month_count/medium), and always ends in "=", never LIKE/IN/"(".
+
+No code changes beyond item 1 (the filename fix). No tuning performed in
+response to any of the above.

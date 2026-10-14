@@ -33,10 +33,28 @@ def ask(question: str) -> dict:
     }
 
 
+def questions_tag(path: str) -> str:
+    """'' for the default dev set (unchanged filename), else a short tag
+    e.g. 'data/questions_heldout.jsonl' -> 'heldout'."""
+    if path == QUESTIONS:
+        return ""
+    base = path.rsplit("/", 1)[-1]
+    if base.endswith(".jsonl"):
+        base = base[:-len(".jsonl")]
+    if base.startswith("questions_"):
+        base = base[len("questions_"):]
+    elif base == "questions":
+        base = ""
+    return base
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--questions", default=QUESTIONS, help="path to the questions .jsonl file")
     args = p.parse_args()
+
+    tag = questions_tag(args.questions)
+    results_path = f"data/results_baseline_{tag}.jsonl" if tag else RESULTS
 
     results = []
     for q in load_questions(args.questions):
@@ -44,7 +62,7 @@ def main():
         row = {**q, **out, "correct": is_correct(out["got"], q["expected"])}
         results.append(row)
         print(f"{q['id']:>2} {'OK ' if row['correct'] else 'BAD'} got={out['got']} expected={q['expected']}")
-    with open(RESULTS, "w") as f:
+    with open(results_path, "w") as f:
         for row in results:
             f.write(json.dumps(row) + "\n")
     print()

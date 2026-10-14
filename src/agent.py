@@ -58,6 +58,22 @@ TOOLS = [
 ]
 
 
+def questions_tag(path: str) -> str:
+    """Turn a questions file path into a short tag for the results
+    filename, e.g. 'data/questions_heldout.jsonl' -> 'heldout'. Returns ''
+    for the default dev set, so its filename stays unchanged."""
+    if path == QUESTIONS:
+        return ""
+    base = path.rsplit("/", 1)[-1]
+    if base.endswith(".jsonl"):
+        base = base[:-len(".jsonl")]
+    if base.startswith("questions_"):
+        base = base[len("questions_"):]
+    elif base == "questions":
+        base = ""
+    return base
+
+
 def get_arg(args: dict, key: str):
     """Small models sometimes rename the one declared argument (e.g. 'a'
     instead of 'number'). With only one parameter, any single value is it."""
@@ -243,6 +259,9 @@ def main():
         suffix += "_finalfromresult"
     if args.precision_only:
         suffix += "_precisiononly"
+    tag = questions_tag(args.questions)
+    if tag:
+        suffix += f"_{tag}"
     results_path = f"data/results_agent{suffix}.jsonl"
 
     results = []
