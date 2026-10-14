@@ -815,3 +815,19 @@ changes, no tuning:
 
 No code changes beyond item 1 (the filename fix). No tuning performed in
 response to any of the above.
+
+2026-10-14  Searched tests/notes.md and CLAUDE.md for any description of
+--precision-only that says it compares the structured/final value against
+the submitted one for agreement. Found none in either file -- the earlier
+notes.md entry (above, "Added --precision-only to agent.py") already
+states the correct rule. A README.md sentence written separately did
+describe the wrong mechanism (agreement-checking) and has been corrected
+there; nothing here needed fixing.
+Implemented rule, stated plainly for the record: --precision-only, used
+together with --final-from-result, skips the second (re-derivation) call
+entirely whenever the last successful run_sql result is already a whole
+number -- it never compares the second call's value against the
+submitted one, because the second call is simply not made in that case.
+The held-out pre-registration and all five held-out runs
+(normalize-quotes+final-from-result+precision-only) used exactly this
+rule, unchanged from how it was implemented and dev-tested.
