@@ -14,6 +14,15 @@ def load(path=RESULTS):
         return [json.loads(line) for line in f]
 
 
+def strict_got(row):
+    """Correctness counts only a real submit_answer call -- never a
+    plain-text reply, so this must match agent.py's own grading exactly."""
+    for t in row["trajectory"]:
+        if t["tool"] == "submit_answer":
+            return t["output"]
+    return None
+
+
 def is_sql_error(output):
     return bool(re.match(r"^[A-Za-z]+Error:", output))
 
@@ -50,7 +59,7 @@ def classify(row):
 
 def show(row):
     print(f"Q{row['id']} ({row['difficulty']}): {row['question']}")
-    print(f"  expected={row['expected']} got={row['got']} steps={len(row['trajectory'])}")
+    print(f"  expected={row['expected']} got={strict_got(row)} steps={len(row['trajectory'])}")
     for t in row["trajectory"]:
         print(f"    {t['step']} {t['tool']} {t['input']} -> {str(t['output'])[:120]}")
 
@@ -74,13 +83,13 @@ def main():
 
     if args.bad:
         for r in rows:
-            if not r["correct"]:
-                print(f"Q{r['id']:>2} {classify(r):<22} got={r['got']} expected={r['expected']}")
+            if not is_correct(strict_got(r), r["expected"]):
+                print(f"Q{r['id']:>2} {classify(r):<22} got={strict_got(r)} expected={r['expected']}")
         return
 
     counts = {}
     for r in rows:
-        if not r["correct"]:
+        if not is_correct(strict_got(r), r["expected"]):
             c = classify(r)
             counts[c] = counts.get(c, 0) + 1
     total_bad = sum(counts.values())

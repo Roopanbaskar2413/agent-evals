@@ -1,5 +1,4 @@
 import json
-import re
 import ollama
 from src.db_tools import SCHEMA, run_query
 from src.grading import load_questions, is_correct, summarize
@@ -47,13 +46,6 @@ TOOLS = [
 ]
 
 
-def extract_number(text: str):
-    match = re.search(r"-?\d[\d,]*\.?\d*", text or "")
-    if not match:
-        return None
-    return float(match.group().replace(",", ""))
-
-
 def get_arg(args: dict, key: str):
     """Small models sometimes rename the one declared argument (e.g. 'a'
     instead of 'number'). With only one parameter, any single value is it."""
@@ -93,12 +85,7 @@ def answer(question: str) -> dict:
 
         if not tool_calls:
             content = msg.get("content") or ""
-            fallback = extract_number(content)
-            if fallback is not None:
-                got = fallback
-                error = "no tool call: parsed from plain-text reply"
-            else:
-                error = "no tool call: could not parse a number"
+            error = "no tool call"
             trajectory.append({"step": step, "tool": None, "input": None, "output": f"{error} | text={content!r}"})
             break
 

@@ -160,3 +160,129 @@ documented, and deliberately NOT fixed -- two targeted attempts both produced
 a net regression once the full 31-question effect was measured, not just the
 3 targeted questions. Moving to a different, more isolated fix for the next
 M4 attempt, or on to M5.
+
+2026-10-14  Diagnostics before M2b (read-only, no code or commits changed):
+- repr() + unicodedata scan of all 4 ran_out_of_steps trajectories (Q16, 20,
+  22, 24): Q16 has no quote characters at all -- the SQL is simply
+  incomplete ("...= " with nothing after). Q20, Q22, Q24 all use smart/curly
+  quote characters (U+201C/201D or U+2018/2019) instead of straight ASCII
+  quotes, every single attempt, across 32 total attempts -- never once
+  tries a plain quote.
+- Raw ollama.chat replay of Q16 (data/scratch/diagnose_q16_raw.py, not
+  committed): reproduced deterministically. The RAW tool_calls returned by
+  Ollama already contain the truncated SQL string, with content=''. Confirms
+  the truncation is the model's own generation, not a bug in agent.py's
+  parsing -- get_arg() just reads the string Ollama already handed back.
+
+2026-10-14  M2b prediction (written before running): adding a one-time nudge
+-- when a step has no tool call, append one user message asking for
+submit_answer, continue the loop, but only once per question -- can only
+possibly change behavior for rows that actually hit the no-tool-call branch
+in the current run: Q21, Q25, Q26, Q27 (the 4 current no_submit_text rows).
+No other row's message history changes at all before that branch fires, and
+the system prompt, tool list, and MAX_STEPS are unchanged, so by the same
+determinism already confirmed (0/31 variance across 3 reruns of unchanged
+code), all other 27 ids should produce byte-identical got/trajectory to the
+current data/results_agent.jsonl.
+Whether the 4 nudged rows become correct is uncertain and predicted separately:
+- Q21: already stated the right number (21055.42, off by 1 cent) in plain
+  text before. Nudging may just make it restate the same slightly-wrong
+  number through a real submit_answer call -- predict still BAD.
+- Q25, Q26, Q27: never ran a real query at all (step 1 was already a fake
+  JSON-shaped text blob, no run_sql call happened). Nudging asks for
+  submit_answer, not for it to go back and query -- predict these likely
+  stay BAD too, since there's no real number behind them yet.
+If any id outside {21, 25, 26, 27} changes, that would mean the determinism
+assumption above is wrong and needs investigating, not explaining away.
+
+RESULT: M2b overall 14/31 (45%), easy 13/15, medium 0/9, hard 1/7 -- up from
+M2's 13/31. 5 rows changed, not the predicted 4: Q11, Q21, Q25, Q26, Q27.
+
+Prediction MISS, root cause found (checked, not guessed): Q11 changed too.
+Its original M2 trajectory also ended with a no-tool-call plain-text reply
+at the last step, structurally identical to Q21/25/26/27 -- it just happened
+to grade correct already (regex fallback parsed "5" correctly), so it never
+showed up in inspect_trajectories.py's failure list, which only scans
+INCORRECT rows. The prediction was built from that list, so it missed a row
+that could be touched by the new branch. Determinism itself was not wrong;
+the scoping of "which rows can the nudge possibly affect" was too narrow.
+
+Per-row result:
+- Q11: correct in both. M2 reached 5.0 via the regex fallback; M2b reached
+  the same 5.0 via a real submit_answer call after one nudge (steps 6->7).
+  Same grade, cleaner mechanism -- no concern.
+- Q21: still BAD, and got WORSE: 21055.42 (1 cent off) -> 21055.0 (43 cents
+  off). The nudge made the model restate the number less precisely than its
+  own original sentence had.
+- Q25: still BAD, got=3.0 (expected 13). Never ran a real query before or
+  after the nudge -- step 1 was always a fake JSON-text blob, not a real
+  tool call.
+- Q26: BAD -> OK, got=3.0 (expected 3). NOT a real fix -- same fake-blob
+  pattern as Q25/27, model guesses "3" with no query ever run. Matches
+  expected by coincidence only (true count for this question happens to be
+  3); the identical guess is wrong for Q25 (13) and Q27 (5).
+- Q27: still BAD, got=3.0 (expected 5). Same fake-blob pattern, guess wrong.
+
+Conclusion: net +1 (13->14) is mostly not real. One genuine neutral change
+(Q11), one regression in precision (Q21), one lucky guess (Q26), two
+unchanged (Q25, Q27). The nudge does not make the model go back and run a
+query it skipped -- it only prompts for a final number, so rows that never
+queried the database still don't query it after nudging, they just guess.
+src/agent_m2b.py kept as a separate module (not merged into agent.py), per
+the M4 lesson that prompt/tool changes must be evaluated in full before
+being adopted. Not yet decided whether to keep, extend, or discard M2b.
+
+2026-10-14  Code check (read-only): confirmed agent.py's no-tool-call branch
+calls extract_number() on plain-text content and can set got from that alone
+-- a text-only reply can grade correct without ever calling submit_answer.
+Confirmed diff src/agent.py src/agent_m2b.py: the nudge logic (nudges
+counter, the "if nudges == 0" branch, the nudges field) exists ONLY in
+agent_m2b.py. agent.py's committed code is untouched.
+Confirmed Q11 in the M2 (committed) trajectory ends on a text reply at step
+6 ('The number of customers living in Pune is 5.'), tool=None, no
+submit_answer call anywhere in its trajectory -- it graded correct purely
+via the regex fallback.
+
+Strict re-score (data/scratch/rescore_strict.py, read-only, no model calls):
+recomputed got/correct from saved trajectories using ONLY a submit_answer
+step's recorded value; any row that never called submit_answer gets
+strict_got=None regardless of what the original row's got/correct said.
+RESULT:
+  M2  strict: 12/31 (vs the already-reported loose score 13/31)
+    id 11 is the only row that changes: loose correct=True (got=5.0 via
+    text fallback) -> strict correct=False (got=None, no submit_answer call
+    in its trajectory at all).
+  M2b strict: 14/31 (identical to the already-reported loose score -- no
+    ids differ). By the time M2b ran, Q11 got nudged into actually calling
+    submit_answer, so the fallback was never needed for it there.
+
+Conclusion: under strict, submit_answer-only scoring the real M2->M2b gap is
+12->14 (+2), not the loose +1. But one of those two points (Q26) is
+confirmed to be a lucky guess -- the model never ran a real query for Q25,
+Q26, or Q27 either before or after the nudge, it just states "3" for all
+three, which happens to equal Q26's true answer and is wrong for the other
+two. The other point (Q11) is a real mechanism improvement: same correct
+data, now reached through an actual submit_answer call instead of an
+accidental text-parse. M2b's "+1" headline score was overstating a lucky
+guess as a fix; the honest read is "one real win, one coincidence."
+M2c is next.
+
+2026-10-14  Removed the plain-text number fallback from agent.py. The
+no-tool-call branch no longer calls extract_number() on the reply content --
+got stays None, error is just "no tool call". extract_number() itself and
+the now-unused `import re` were deleted from agent.py (agent_m2b.py's import
+of it is about to be removed too, once it's deleted in the next step).
+inspect_trajectories.py updated to match: added strict_got(row), which scans
+the trajectory for a submit_answer step and returns its value, or None --
+used everywhere the script previously trusted the row's own got/correct
+fields (show(), --bad, the summary counts), so the inspector can never
+silently disagree with how agent.py itself grades.
+Reran agent.py on all 31 (model unchanged, deterministic) to keep
+data/results_agent.jsonl consistent with the new code.
+RESULT: 12/31 (39%), easy 12/15, medium 0/9, hard 0/7 -- matches the strict
+re-score exactly. Only Q11 differs from the previous committed file: now
+"BAD, no tool call" instead of the old fallback-sourced "OK, got=5.0".
+no_submit_text count goes from 4 to 5 (picks up Q11), all other 4 categories
+unchanged.
+OFFICIAL BASELINES from here on: M2 = 12/31, M2b = 14/31 (both strict,
+submit_answer-only scoring).
