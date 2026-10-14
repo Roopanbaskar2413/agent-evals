@@ -1,0 +1,31 @@
+{"id": 1, "question": "How many orders are there in total?", "expected": 300, "difficulty": "easy"}
+{"id": 2, "question": "What is the total amount of delivered orders?", "expected": 39064.32, "difficulty": "easy"}
+{"id": 3, "question": "What is the average amount of cancelled orders?", "expected": 291.52, "difficulty": "easy"}
+{"id": 4, "question": "How many orders are in the books category?", "expected": 77, "difficulty": "easy"}
+{"id": 5, "question": "How many orders are in the toys category?", "expected": 73, "difficulty": "easy"}
+{"id": 6, "question": "How many orders are in the gadgets category?", "expected": 67, "difficulty": "easy"}
+{"id": 7, "question": "How many orders are in the clothing category?", "expected": 83, "difficulty": "easy"}
+{"id": 8, "question": "How many customers live in Chennai?", "expected": 12, "difficulty": "easy"}
+{"id": 9, "question": "How many customers live in Mumbai?", "expected": 10, "difficulty": "easy"}
+{"id": 10, "question": "How many customers live in Delhi?", "expected": 6, "difficulty": "easy"}
+{"id": 11, "question": "How many customers live in Pune?", "expected": 5, "difficulty": "easy"}
+{"id": 12, "question": "How many customers live in Kochi?", "expected": 7, "difficulty": "easy"}
+{"id": 13, "question": "How many orders did Customer 3 place?", "expected": 9, "difficulty": "easy"}
+{"id": 14, "question": "How many orders did Customer 12 place?", "expected": 4, "difficulty": "easy"}
+{"id": 15, "question": "How many orders did Customer 27 place?", "expected": 5, "difficulty": "easy"}
+{"id": 16, "question": "How many orders were placed in January?", "expected": 22, "difficulty": "medium"}
+{"id": 17, "question": "How many orders were placed in April?", "expected": 14, "difficulty": "medium"}
+{"id": 18, "question": "How many orders were placed in August?", "expected": 32, "difficulty": "medium"}
+{"id": 19, "question": "How many orders were placed in November?", "expected": 31, "difficulty": "medium"}
+{"id": 20, "question": "What is the total amount of orders placed by customers in Chennai?", "expected": 20232.22, "difficulty": "medium"}
+{"id": 21, "question": "What is the total amount of orders placed by customers in Mumbai?", "expected": 21055.43, "difficulty": "medium"}
+{"id": 22, "question": "What is the total amount of orders placed by customers in Delhi?", "expected": 9772.15, "difficulty": "medium"}
+{"id": 23, "question": "What is the total amount of orders placed by customers in Pune?", "expected": 9913.59, "difficulty": "medium"}
+{"id": 24, "question": "What is the total amount of orders placed by customers in Kochi?", "expected": 15603.82, "difficulty": "medium"}
+{"id": 25, "question": "How many delivered books orders were placed by customers in Chennai?", "expected": 13, "difficulty": "hard"}
+{"id": 26, "question": "How many delivered gadgets orders were placed by customers in Delhi?", "expected": 3, "difficulty": "hard"}
+{"id": 27, "question": "How many delivered toys orders were placed by customers in Pune?", "expected": 5, "difficulty": "hard"}
+{"id": 28, "question": "What is the average amount of delivered books orders?", "expected": 267.9, "difficulty": "hard"}
+{"id": 29, "question": "What is the average amount of delivered toys orders?", "expected": 234.45, "difficulty": "hard"}
+{"id": 30, "question": "What is the average amount of delivered gadgets orders?", "expected": 232.61, "difficulty": "hard"}
+{"id": 31, "question": "What is the average amount of delivered clothing orders?", "expected": 236.34, "difficulty": "hard"}
