@@ -18,6 +18,7 @@ Inspired by the three briefs in github.com/rasswanth-lyzr/ship-ai-projects (CC B
 - Models run locally with Ollama (llama3.2, 3B). Installed packages: ollama, pydantic.
 - Git identity is already set to my GitHub noreply email. Do not change git config.
 - Before every commit run `git status`. Never commit .env, .venv, or anything under data/private/.
+- Never add Co-Authored-By trailers or "Generated with Claude Code" lines to commits or PRs.
 - Set no paid API without telling me first; hard spending limits must be set before any paid key is used.
 
 ## Task and ground truth
@@ -36,15 +37,18 @@ Inspired by the three briefs in github.com/rasswanth-lyzr/ship-ai-projects (CC B
 - src/db_tools.py: SCHEMA (table layout as text) and run_query (read-only connection via file:data/shop.db?mode=ro, SELECT only, returns up to 20 rows).
 - src/baseline.py: M1, model answers with no tools and no database. Output {"number": float} via structured output.
 - src/baseline_sql.py: M1b, schema in the prompt, model writes one SQL query, no loop, no retry.
-- src/agent.py: M2, tool loop with run_sql and submit_answer, MAX_STEPS 8, records full trajectory. Written but NOT yet run or verified.
-- tests/notes.md: run log.
-- Result files: data/results_baseline.jsonl, data/results_baseline_sql.jsonl, data/results_agent.jsonl (each row = question fields + got + correct + tokens).
+- src/agent.py: M2, tool loop with run_sql and submit_answer tools, MAX_STEPS 8, records full trajectory. Written, run, and verified stable (same 13/31 across 3 identical reruns, 0/31 unstable questions).
+- src/inspect_trajectories.py: M3, reads data/results_agent.jsonl and classifies every incorrect row from its raw trajectory into one of 5 failure types (see Results below). CLI: no args for a summary table, --bad for one line per failure with its category, --id N for one question's full trajectory, --difficulty to filter.
+- tests/notes.md: run log (date, what changed, prediction, result).
+- Result files: data/results_baseline.jsonl, data/results_baseline_sql.jsonl (each row = question fields + got + error + tokens_in + tokens_out + correct), data/results_agent.jsonl (same, plus steps_used and trajectory -- a list of {step, tool, input, output} covering every run_sql/submit_answer call the agent made).
+- data/scratch/: intermediate result files from M4 variance testing, gitignored, not part of the real pipeline.
 
 ## Results so far
 | Run | Setup | Score |
 |---|---|---|
 | M1 baseline | llama3.2, no tools, no database | 0/31 (0%) |
 | M1b baseline | schema in prompt, one SQL query, no loop | 15/31 (48%): easy 15/15, medium 0/9, hard 0/7 |
+| M2 agent | run_sql + submit_answer tool loop, MAX_STEPS 8 | 13/31 (42%): easy 13/15, medium 0/9, hard 0/7 |
 
 M1 failure mode: confident guessed numbers (for example 850000 for an answer of 7), many 0.0.
 
@@ -56,15 +60,30 @@ M1b failures, 16 total:
 
 Key insight: visible errors can be fixed by an agent that reads the error and retries; silent wrong answers give it nothing to react to. Prediction for M2: it fixes some of the 10 visible failures and few of the 6 silent ones. If it does better than that, find out why.
 
+**M2 did not beat M1b -- the prediction did not hold.** medium/hard stayed at 0/9, 0/7, exactly as predicted (silent failures, e.g. the dropped category filter, were completely untouched by the retry loop). But the visible-error questions mostly did NOT get fixed either -- they got reshuffled into new failure shapes instead of being resolved, and two new easy questions failed that M1b had gotten right, for a net score of 13/31, below M1b's 15/31.
+
+M2 failures, 18 total, classified straight from the trajectory (src/inspect_trajectories.py), in this order:
+- `no_submit_text` (4): last step has no tool call at all -- model answered in plain text or an unparseable blob instead of ever calling a tool as its final move.
+- `ran_out_of_steps` (4): hit MAX_STEPS (8) while the last step is still run_sql, never reached submit_answer.
+- `gave_up_after_errors` (3): hit a real SQL error, retried, but never actually got the right number anywhere in the trajectory, and submitted something wrong anyway.
+- `silent_wrong` (4): no SQL error anywhere, never got the right number anywhere -- a clean logic mistake with nothing to react to (same dropped-category-filter bug as M1b).
+- `wrong_after_recovery` (3): a run_sql call returned the exact right number at some point, but the final submitted answer does not match it -- mostly the model truncating a decimal when retyping it into submit_answer.
+
 Answer key validity check: 15 easy questions matched the model's own SQL, so the questions, database and grader agree.
+
+## M4 attempts on wrong_after_recovery (both reverted)
+- Attempt 1: added a submit_last_result() tool (no arguments; code reads the last successful run_sql value directly, bypassing the model retyping it). Fixed Q3 cleanly (exact decimal preserved) but broke 2 unrelated easy questions (Q4, Q7) that had nothing to do with the change. Net 12/31, a regression.
+- Attempt 2: shortened the system prompt on top of attempt 1, hypothesizing prompt length caused the regression. Fixed Q3 and Q7 but broke 3 different questions instead (Q4, Q8, Q11). Net 11/31, worse.
+- Both reverted. Variance check: reran the unchanged v1 agent.py 3 times, got 13/31 all three times with 0/31 unstable questions -- fully deterministic at temperature 0. This proves the regressions were real, reproducible effects of the prompt/tool changes, not run-to-run noise: editing the shared prompt or tool list can deterministically change the model's output on unrelated questions elsewhere in the same run. Any future change to agent.py's prompt or tools must be judged against the full 31, not just the questions it targets.
+- wrong_after_recovery remains open and unfixed.
 
 ## Milestones
 - M0 done: database and 31 ground-truth questions.
 - M1 done: no-tools baseline, 0/31.
 - M1b done: schema-aware one-shot SQL baseline, 15/31.
-- M2 next: run the tool-using agent; compare with M1 and M1b question by question; report avg steps, tokens, SQL error count.
-- M3: trajectory recording is built into agent.py; add a script to inspect trajectories.
-- M4: read failures, sort into types, fix the biggest type, re-run, show before/after. Run each question 3 times to measure variance.
+- M2 done: tool-using agent, 13/31. Did not beat M1b; see Results above.
+- M3 done: src/inspect_trajectories.py classifies failures from trajectories.
+- M4 in progress: 2 fix attempts on wrong_after_recovery, both reverted (see above). Next: either try a more isolated fix for wrong_after_recovery, or target a different failure type (e.g. silent_wrong).
 - M5: README with results table, a "what broke" section, and one-command run (make demo or a shell script).
 - Stretch: LLM-judge only if needed, checked against 20 hand-graded answers; a second model for comparison.
 
