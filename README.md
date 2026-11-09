@@ -101,6 +101,6 @@ no_submit_text, ran_out_of_steps, gave_up_after_errors, and wrong_after_recovery
 
 ## Limits and next steps
 
-Limits: one small model; one database and one set of templates; samples of 31 and 60; difficulty labels are mine; the quote fix was not exercised on the held-out set because no curly quotes appeared there; the fixes were developed on the dev set; temperature 0 is not fully deterministic (two held-out questions changed trajectory between identical runs).
+Limits: one small model; one database and one set of templates; samples of 31 and 60; difficulty labels are mine; the quote fix was not exercised on the held-out set because no curly quotes appeared there; the fixes were developed on the dev set; the stability check was one configuration, 3 reruns at temperature 0; an earlier exploratory run saw two questions change trajectory (not correctness), so I wouldn't assume determinism across other configurations.
 
 Next: put the year range and a SQLite date hint into the schema and test on a fresh second held-out set; run the same harness with a larger local model; find out why the second call returns 1.0 for some counts.
