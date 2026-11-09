@@ -1,10 +1,10 @@
 import argparse
 import json
 import re
-import ollama
 from pydantic import BaseModel
 from src.db_tools import SCHEMA, run_query
 from src.grading import load_questions, is_correct, summarize
+from src.providers import get_provider
 
 FINAL_ANSWER_PROMPT = "What is your final numeric answer? Reply with just the number."
 
@@ -12,7 +12,7 @@ FINAL_ANSWER_PROMPT = "What is your final numeric answer? Reply with just the nu
 class FinalAnswer(BaseModel):
     number: float
 
-MODEL = "llama3.2"
+DEFAULT_MODEL = "llama3.2"
 QUESTIONS = "data/questions.jsonl"
 MAX_STEPS = 8
 NUDGE = "Call submit_answer with your final numeric answer now."
@@ -102,7 +102,7 @@ def is_whole_number(result_str: str) -> bool:
     return value == int(value)
 
 
-def answer(question: str, nudge: bool = False, normalize: bool = False,
+def answer(question: str, provider, nudge: bool = False, normalize: bool = False,
            structured_final: bool = False, final_from_result: bool = False,
            precision_only: bool = False) -> dict:
     messages = [
@@ -114,6 +114,7 @@ def answer(question: str, nudge: bool = False, normalize: bool = False,
     error = None
     tokens_in = 0
     tokens_out = 0
+    cost_usd = 0.0
     steps_used = 0
     nudges = 0
     used_submit_tool = False
@@ -121,14 +122,10 @@ def answer(question: str, nudge: bool = False, normalize: bool = False,
 
     for step in range(1, MAX_STEPS + 1):
         steps_used = step
-        response = ollama.chat(
-            model=MODEL,
-            messages=messages,
-            tools=TOOLS,
-            options={"temperature": 0},
-        )
+        response = provider.chat(messages=messages, tools=TOOLS, temperature=0)
         tokens_in += response["prompt_eval_count"]
         tokens_out += response["eval_count"]
+        cost_usd += response["cost_usd"]
 
         msg = response["message"]
         messages.append(msg)
@@ -181,14 +178,10 @@ def answer(question: str, nudge: bool = False, normalize: bool = False,
 
     if structured_final and used_submit_tool:
         messages.append({"role": "user", "content": FINAL_ANSWER_PROMPT})
-        response = ollama.chat(
-            model=MODEL,
-            messages=messages,
-            format=FinalAnswer.model_json_schema(),
-            options={"temperature": 0},
-        )
+        response = provider.chat(messages=messages, response_schema=FinalAnswer, temperature=0)
         tokens_in += response["prompt_eval_count"]
         tokens_out += response["eval_count"]
+        cost_usd += response["cost_usd"]
         parsed = FinalAnswer.model_validate_json(response["message"]["content"])
         got = parsed.number
         trajectory.append({"step": steps_used + 1, "tool": "structured_final", "input": None, "output": got})
@@ -204,14 +197,13 @@ def answer(question: str, nudge: bool = False, normalize: bool = False,
                                 "output": got})
         else:
             content = f"{question}\nQuery result: {last_sql_output}"
-            response = ollama.chat(
-                model=MODEL,
+            response = provider.chat(
                 messages=[{"role": "user", "content": content}],
-                format=FinalAnswer.model_json_schema(),
-                options={"temperature": 0},
+                response_schema=FinalAnswer, temperature=0,
             )
             tokens_in += response["prompt_eval_count"]
             tokens_out += response["eval_count"]
+            cost_usd += response["cost_usd"]
             parsed = FinalAnswer.model_validate_json(response["message"]["content"])
             got = parsed.number
             trajectory.append({"step": steps_used + 1, "tool": "final_from_result",
@@ -225,6 +217,7 @@ def answer(question: str, nudge: bool = False, normalize: bool = False,
         "trajectory": trajectory,
         "tokens_in": tokens_in,
         "tokens_out": tokens_out,
+        "cost_usd": cost_usd,
     }
 
 
@@ -243,12 +236,17 @@ def main():
                    help="with --final-from-result, skip the re-derivation when the query "
                         "result is already a whole number")
     p.add_argument("--questions", default=QUESTIONS, help="path to the questions .jsonl file")
+    p.add_argument("--model", choices=sorted(["llama3.2", "gemini", "gpt"]), default=DEFAULT_MODEL,
+                   help="which model/provider to answer with")
     args = p.parse_args()
+    provider = get_provider(args.model)
 
     if args.structured_final and args.final_from_result:
         p.error("--structured-final and --final-from-result are mutually exclusive")
 
     suffix = ""
+    if args.model != DEFAULT_MODEL:
+        suffix += f"_{args.model}"
     if args.nudge:
         suffix += "_nudge"
     if args.normalize_quotes:
@@ -265,19 +263,21 @@ def main():
     results_path = f"data/results_agent{suffix}.jsonl"
 
     results = []
-    for q in load_questions(args.questions):
-        out = answer(q["question"], nudge=args.nudge, normalize=args.normalize_quotes,
-                     structured_final=args.structured_final,
-                     final_from_result=args.final_from_result,
-                     precision_only=args.precision_only)
-        row = {**q, **out, "correct": is_correct(out["got"], q["expected"])}
-        results.append(row)
-        status = "OK " if row["correct"] else "BAD"
-        note = row["error"] or f"got={out['got']} expected={q['expected']} steps={out['steps_used']}"
-        print(f"{q['id']:>2} {status} {note} nudges={out['nudges']}")
     with open(results_path, "w") as f:
-        for row in results:
+        for q in load_questions(args.questions):
+            out = answer(q["question"], provider, nudge=args.nudge, normalize=args.normalize_quotes,
+                         structured_final=args.structured_final,
+                         final_from_result=args.final_from_result,
+                         precision_only=args.precision_only)
+            row = {**q, **out, "correct": is_correct(out["got"], q["expected"])}
+            results.append(row)
             f.write(json.dumps(row) + "\n")
+            f.flush()  # saved the instant it's computed -- a later crash
+            # (e.g. hitting the retry ceiling on a paid API) only costs the
+            # questions not yet reached, not everything already answered.
+            status = "OK " if row["correct"] else "BAD"
+            note = row["error"] or f"got={out['got']} expected={q['expected']} steps={out['steps_used']}"
+            print(f"{q['id']:>2} {status} {note} nudges={out['nudges']}")
     print()
     summarize(results)
 

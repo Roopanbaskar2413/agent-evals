@@ -1,11 +1,11 @@
 import argparse
 import json
-import ollama
 from pydantic import BaseModel
 from src.db_tools import SCHEMA, run_query
 from src.grading import load_questions, is_correct, summarize
+from src.providers import get_provider
 
-MODEL = "llama3.2"
+DEFAULT_MODEL = "llama3.2"
 QUESTIONS = "data/questions.jsonl"
 RESULTS = "data/results_baseline_sql.jsonl"
 
@@ -18,15 +18,14 @@ class Query(BaseModel):
     sql: str
 
 
-def answer(question: str) -> dict:
-    response = ollama.chat(
-        model=MODEL,
+def answer(question: str, provider) -> dict:
+    response = provider.chat(
         messages=[
             {"role": "system", "content": SYSTEM},
             {"role": "user", "content": question},
         ],
-        format=Query.model_json_schema(),
-        options={"temperature": 0},
+        response_schema=Query,
+        temperature=0,
     )
     sql = Query.model_validate_json(response["message"]["content"]).sql
     try:
@@ -41,6 +40,7 @@ def answer(question: str) -> dict:
         "error": error,
         "tokens_in": response["prompt_eval_count"],
         "tokens_out": response["eval_count"],
+        "cost_usd": response["cost_usd"],
     }
 
 
@@ -62,22 +62,32 @@ def questions_tag(path: str) -> str:
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--questions", default=QUESTIONS, help="path to the questions .jsonl file")
+    p.add_argument("--model", choices=sorted(["llama3.2", "gemini", "gpt"]), default=DEFAULT_MODEL,
+                   help="which model/provider to answer with")
     args = p.parse_args()
+    provider = get_provider(args.model)
 
     tag = questions_tag(args.questions)
-    results_path = f"data/results_baseline_sql_{tag}.jsonl" if tag else RESULTS
+    model_tag = "" if args.model == DEFAULT_MODEL else f"_{args.model}"
+    results_path = (
+        f"data/results_baseline_sql{model_tag}_{tag}.jsonl" if tag
+        else f"data/results_baseline_sql{model_tag}.jsonl" if model_tag
+        else RESULTS
+    )
 
     results = []
-    for q in load_questions(args.questions):
-        out = answer(q["question"])
-        row = {**q, **out, "correct": is_correct(out["got"], q["expected"])}
-        results.append(row)
-        status = "OK " if row["correct"] else "BAD"
-        note = row["error"] or f"got={out['got']} expected={q['expected']}"
-        print(f"{q['id']:>2} {status} {note}")
     with open(results_path, "w") as f:
-        for row in results:
+        for q in load_questions(args.questions):
+            out = answer(q["question"], provider)
+            row = {**q, **out, "correct": is_correct(out["got"], q["expected"])}
+            results.append(row)
             f.write(json.dumps(row) + "\n")
+            f.flush()  # saved the instant it's computed -- a later crash
+            # (e.g. hitting the retry ceiling on a paid API) only costs the
+            # questions not yet reached, not everything already answered.
+            status = "OK " if row["correct"] else "BAD"
+            note = row["error"] or f"got={out['got']} expected={q['expected']}"
+            print(f"{q['id']:>2} {status} {note}")
     print()
     summarize(results)
 

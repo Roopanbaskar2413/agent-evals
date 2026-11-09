@@ -1,0 +1,1 @@
+{"id": 1, "question": "How many orders are there in total?", "expected": 300, "difficulty": "easy", "sql": "SELECT COUNT(*) FROM orders;", "got": 300.0, "error": null, "tokens_in": 131, "tokens_out": 10, "cost_usd": 0.00013575, "correct": true}

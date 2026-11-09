@@ -831,3 +831,21 @@ submitted one, because the second call is simply not made in that case.
 The held-out pre-registration and all five held-out runs
 (normalize-quotes+final-from-result+precision-only) used exactly this
 rule, unchanged from how it was implemented and dev-tested.
+
+2026-11-09  Added src/rerun.py: reruns the held-out config
+(normalize-quotes+final-from-result+precision-only, the one that scored
+24/60) N times in a row via the existing answer()/is_correct/load_questions,
+to check whether that score is stable across reps. Ran against the exact
+committed code behind the 24/60 result (isolated from the uncommitted
+multi-provider/providers.py WIP via git stash, popped back afterward)
+since answer() there has no provider argument.
+Prediction: expected some flipping, since an earlier non-strict exploration
+noted questions 16 and 18 flipping which one gets a hallucinated value
+between runs.
+RESULT: all 3 reps scored 24/60 identically; all 60 questions had
+stable_verdict=True and stable_number=True across all 3 reps -- no flips
+at all, including Q16/Q18. Conclusion: at temperature 0, this exact
+config is deterministic across reruns, so 24/60 is not a lucky single
+draw. The earlier flip observation either doesn't apply to this exact
+config or needs a prompt/trajectory-level check (not just correctness)
+to resurface.
