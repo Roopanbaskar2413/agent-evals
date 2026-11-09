@@ -68,23 +68,27 @@ Two question sets. The 31 dev questions (15 easy, 9 medium, 7 hard) are the ones
 | normalize-quotes+final-from-result+precision-only | dev | 879.9 | 67.1 | 1545.2 |
 | normalize-quotes+final-from-result+precision-only | held-out | 1225.5 | 101.0 | 3316.2 |
 
-### Failure types (agent configurations only)
+### Failure types
 
-| Configuration | Dataset | no_submit_text | ran_out_of_steps | gave_up_after_errors | silent_wrong | wrong_after_recovery |
-|---|---|---|---|---|---|---|
-| M2 | dev | 5 | 4 | 3 | 4 | 3 |
-| M2 | held-out | 7 | 11 | 8 | 9 | 5 |
-| normalize-quotes | dev | 4 | 1 | 3 | 4 | 7 |
-| normalize-quotes | held-out | 7 | 11 | 8 | 9 | 5 |
-| normalize-quotes+final-from-result | dev | 4 | 1 | 3 | 4 | 3 |
-| normalize-quotes+final-from-result | held-out | 6 | 11 | 9 | 9 | 6 |
-| normalize-quotes+final-from-result+precision-only | dev | 4 | 1 | 3 | 4 | 0 |
-| normalize-quotes+final-from-result+precision-only | held-out | 7 | 11 | 8 | 9 | 1 |
+| Configuration | Dataset | no_submit_text | ran_out_of_steps | gave_up_after_errors | silent_wrong | wrong_after_recovery | error |
+|---|---|---|---|---|---|---|---|
+| M1b | dev | 0 | 0 | 0 | 6 | 0 | 10 |
+| M1b | held-out | 0 | 0 | 0 | 12 | 0 | 26 |
+| M2 | dev | 5 | 4 | 3 | 4 | 3 | 0 |
+| M2 | held-out | 7 | 11 | 8 | 9 | 5 | 0 |
+| normalize-quotes | dev | 4 | 1 | 3 | 4 | 7 | 0 |
+| normalize-quotes | held-out | 7 | 11 | 8 | 9 | 5 | 0 |
+| normalize-quotes+final-from-result | dev | 4 | 1 | 3 | 4 | 3 | 0 |
+| normalize-quotes+final-from-result | held-out | 6 | 11 | 9 | 9 | 6 | 0 |
+| normalize-quotes+final-from-result+precision-only | dev | 4 | 1 | 3 | 4 | 0 | 0 |
+| normalize-quotes+final-from-result+precision-only | held-out | 7 | 11 | 8 | 9 | 1 | 0 |
+
+no_submit_text, ran_out_of_steps, gave_up_after_errors, and wrong_after_recovery can only happen inside the tool loop; M1b makes one SQL call and stops, so it can only fail with error (the query itself raised) or silent_wrong (the query ran, the answer was wrong).
 
 - The best agent configuration scored 24/60 on held-out against 22/60 for the one-shot SQL baseline. A two-question gap on 60 is within noise, so I don't claim the agent beats the baseline. It used about 9x the input tokens (1,226 against 137 per question) and about 7.6x the tokens per correct answer (3,316 against 439).
 - The fixes worked at the level they were aimed at: wrong_after_recovery failures (mostly truncated decimals) fell from 5 to 1 on held-out, and easy questions rose from 16/26 to 19/26.
 - The dev-set gain on medium questions (0/9 to 5/9) did not replicate: medium is 0/16 on held-out in every configuration.
-- Re-running one configuration three times gave 20/60 each time, although two questions changed trajectory between runs without changing correctness.
+- Re-running the best agent configuration three times gave 24/60 each time, with every question's correctness and submitted number identical across all three runs.
 
 ## What broke
 

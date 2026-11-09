@@ -15,7 +15,7 @@ CONFIGS = [
 ]
 DIFFICULTIES = ("easy", "medium", "hard")
 FAILURE_TYPES = ("no_submit_text", "ran_out_of_steps", "gave_up_after_errors",
-                 "silent_wrong", "wrong_after_recovery")
+                 "silent_wrong", "wrong_after_recovery", "error")
 
 
 def load(path):
@@ -67,19 +67,26 @@ def tokens_table():
     return "\n".join(lines)
 
 
+def classify_row(name, row):
+    """M1b has no trajectory (one SQL call, no loop), so it can only fail
+    two ways: the query itself errored, or it ran and returned a wrong
+    number. Agent configurations keep their trajectory-based classify()."""
+    if name == "M1b":
+        return "error" if row["error"] else "silent_wrong"
+    return classify(row)
+
+
 def failure_table():
     header = "| Configuration | Dataset | " + " | ".join(FAILURE_TYPES) + " |"
     sep = "|---|---|" + "---|" * len(FAILURE_TYPES)
     lines = [header, sep]
     for name, dev_path, held_path in CONFIGS:
-        if name == "M1b":
-            continue
         for label, path in (("dev", dev_path), ("held-out", held_path)):
             rows = load(path)
             counts = {}
             for r in rows:
                 if not r["correct"]:
-                    c = classify(r)
+                    c = classify_row(name, r)
                     counts[c] = counts.get(c, 0) + 1
             vals = [str(counts.get(cat, 0)) for cat in FAILURE_TYPES]
             lines.append(f"| {name} | {label} | " + " | ".join(vals) + " |")
@@ -93,8 +100,12 @@ def main():
     print(difficulty_table())
     print("\n### Tokens\n")
     print(tokens_table())
-    print("\n### Failure types (agent configurations only)\n")
+    print("\n### Failure types\n")
     print(failure_table())
+    print("\nno_submit_text, ran_out_of_steps, gave_up_after_errors, and "
+          "wrong_after_recovery can only happen inside the tool loop; M1b makes "
+          "one SQL call and stops, so it can only fail with error (the query "
+          "itself raised) or silent_wrong (the query ran, the answer was wrong).")
 
 
 if __name__ == "__main__":
