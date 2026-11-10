@@ -1458,3 +1458,43 @@ RESULTS so far:
   alone doesn't trigger the 1.0 mystery -- something more specific to
   Q4/Q6/Q13's template or phrasing does. Still unexplained, but this is
   new evidence for that open question in CLAUDE.md.
+
+2026-11-11, reproducibility check on the current real config (same
+methodology as the earlier 24/60 check): normalize-quotes+final-from-
+result+precision-only+nudge, held-out set, 3 full reruns, checking not
+just the overall score but every individual question's verdict and
+submitted number across runs.
+Found src/rerun.py doesn't pass nudge=True to answer() -- as written it
+would silently test the pre-nudge config, not the real committed one.
+Fixing that first (one-line change) before running, since testing the
+wrong config would make this check worthless.
+Prediction: with temperature 0 end to end, I'd expect this to reproduce
+43/60 on all 3 runs, same clean determinism as the earlier strict-M2
+check. Specifically watching for whether the final-from-result extra
+call (a second structured-output call per question, present in this
+config but not in the earlier plain-M2 check) introduces any new
+instability -- that mechanism wasn't covered by the first check.
+Running: python -m src.rerun --runs 3 (after fixing nudge=True)
+
+RESULT: also found src/rerun.py was missing the `provider` argument to
+answer() entirely (a required positional arg since the multi-provider
+abstraction was added) -- would have crashed immediately. Fixed that
+too (added get_provider("llama3.2") in main(), passed through
+run_once()). Both fixes were plumbing/wiring bugs in the test harness
+itself, not behavior changes to src/agent.py.
+
+Ran 3 full held-out reruns of normalize-quotes+final-from-result+
+precision-only+nudge. Prediction confirmed exactly: 43/60 on all 3
+runs (run1=43, run2=43, run3=43, range=0), matching the number already
+reported in README/CLAUDE.md. More importantly, per-question check: all
+60 questions show stable_verdict=True AND stable_number=True across all
+3 runs -- every single question, not just the aggregate score, landed
+on the identical right/wrong verdict and the identical submitted number
+(including the non-whole-number ones like 242.63552795031055 and
+254.37814814814817, reproduced to the full float repr every time, and
+the four got=None rows from Q48/49/50/51). The final-from-result extra
+call (not present in the earlier plain-M2 stability check) introduced
+no additional instability -- same clean determinism as before, now
+confirmed on the actual reported configuration rather than a different
+one. This supersedes the earlier "not re-checked under the new schema
+or with nudge" caveat in README/CLAUDE.md for this specific config.

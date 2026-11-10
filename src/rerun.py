@@ -2,17 +2,19 @@ import argparse
 import json
 from src.agent import answer
 from src.grading import load_questions, is_correct
+from src.providers import get_provider
 
 QUESTIONS = "data/questions_heldout.jsonl"
 RESULTS_TEMPLATE = "data/results_agent_normalizequotes_finalfromresult_precisiononly_heldout_run{n}.jsonl"
 
 
-def run_once(n: int, questions: list) -> list:
+def run_once(n: int, questions: list, provider) -> list:
     results_path = RESULTS_TEMPLATE.format(n=n)
     results = []
     with open(results_path, "w") as f:
         for q in questions:
-            out = answer(q["question"], normalize=True, final_from_result=True, precision_only=True)
+            out = answer(q["question"], provider, nudge=True, normalize=True,
+                         final_from_result=True, precision_only=True)
             row = {**q, **out, "correct": is_correct(out["got"], q["expected"])}
             results.append(row)
             f.write(json.dumps(row) + "\n")
@@ -61,7 +63,8 @@ def main():
     args = p.parse_args()
 
     questions = load_questions(QUESTIONS)
-    all_runs = [run_once(n, questions) for n in range(1, args.runs + 1)]
+    provider = get_provider("llama3.2")
+    all_runs = [run_once(n, questions, provider) for n in range(1, args.runs + 1)]
 
     print()
     print_stability_table(all_runs)
