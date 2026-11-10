@@ -1145,3 +1145,316 @@ re-run under the final SCHEMA in this session. The full pre-registered
 generated tables) still reflects the PRE-FIX SCHEMA and has not been
 regenerated -- flagged in CLAUDE.md's Next section as outstanding work,
 not done here.
+
+2026-11-10  Full re-run of all 5 configurations (M1b, M2, normalize-quotes,
+normalize-quotes+final-from-result, normalize-quotes+final-from-result+
+precision-only) on both dev (31) and held-out (60), under the committed
+SCHEMA fix. M1b dev was already redone (above, 17/31); this covers the
+remaining 9 runs. Prediction, against the pre-fix numbers in CLAUDE.md's
+"Results so far" table and the per-id breakdown already on disk:
+
+- M1b held-out: the 30-question subset test already measured this
+  config's exact behavior on customer-count (0/14, was 14/14) and
+  month_count+month_sum (16/16, was 0/16) under this exact SCHEMA.
+  Applying those deltas to the pre-fix 22/60 (-14 customer-count +16
+  month) gives a rough estimate around 24/60, but the other 30 held-out
+  questions (category counts, city joins, category averages) weren't
+  in the subset and aren't expected to change -- so I'd call this
+  "around the same overall score, much worse composition" rather than
+  commit to an exact number.
+- Agent configs, held-out medium (Q27-42, exactly the month_count +
+  month_sum questions -- this is the entire "medium" difficulty band
+  on held-out): expect a LARGE jump from 0/16 (true in every config
+  before, per CLAUDE.md) specifically for the two configs that already
+  fix decimal truncation (final-from-result): normalize-quotes+
+  final-from-result and the best config should both approach 16/16,
+  matching the best config's subset result exactly. For M2 (flags off)
+  and normalize-quotes alone, I expect month_count (integer, Q27-34) to
+  improve similarly since there's no decimal to truncate, but month_sum
+  (decimal dollar amounts, Q35-42) to stay mostly broken -- those
+  configs still have the known wrong_after_recovery truncation bug
+  (e.g. 7777.53 -> 7777) that final-from-result exists to fix, and
+  nothing about the SCHEMA change touches that. So I'd predict M2 and
+  normalize-quotes land closer to 8-11/16 medium, not 16/16.
+- Agent configs, held-out easy (customer-count, Q1-14): expect NO
+  regression for any of the 4 agent configs, extending the best
+  config's clean 14/14 subset result -- the over-filtering bug showed
+  up only in M1b's one-shot call, not in the agent's tool-loop
+  reasoning, and nothing about which flags are set changes that first
+  run_sql call.
+- Dev set: all 4 agent configs should fix Q16-19 (month_count, the only
+  date-filter template on dev -- there's no month_sum template on dev)
+  cleanly, +4 each, with no decimal-truncation risk since Q16-19 are
+  plain counts, not sums. No customer-count regression expected (Q13-15),
+  same reasoning as held-out. Other dev/held-out questions (city joins,
+  category counts/averages, pending/delivered filters) are not
+  expected to change -- they don't touch order_date at all.
+- Overall: I expect this to be a clear net win for every agent
+  configuration (especially the two with final-from-result) and a
+  mixed/flat result for M1b, for the reasons already logged above.
+
+RESULT: full re-run, all 5 configs, both datasets, under the committed
+SCHEMA. Overall scores (pre-fix -> post-fix):
+
+| Config | Dev | Held-out |
+|---|---|---|
+| M1b | 15/31 -> 17/31 | 22/60 -> 35/60 |
+| M2 | 12/31 -> 13/31 | 20/60 -> 28/60 |
+| normalize-quotes | 12/31 -> 13/31 | 20/60 -> 28/60 |
+| normalize-quotes+final-from-result | 16/31 -> 14/31 | 19/60 -> 33/60 |
+| normalize-quotes+final-from-result+precision-only | 19/31 -> 15/31 | 24/60 -> 39/60 |
+
+Held-out matched the prediction well: every config gained substantially
+(+8 to +15), driven mostly by medium (the month_count+month_sum
+questions, the entire medium band on held-out): M2/normalize-quotes
+went 0/16 -> 8/16 (month_count fixed, month_sum still decimal-truncated,
+exactly as predicted since neither has final-from-result); nq+ffr and
+nq+ffr+po both went 0/16 -> 16/16 (clean, decimals preserved, as
+predicted). Easy (customer-count) showed NO regression for any of the 4
+agent configs on held-out, confirming the earlier subset finding
+generalizes to the full 60. Hard dipped slightly for nq+ffr (6/18->4/18)
+and nq+ffr+po (5/18->4/18) -- small, unexplained, within noise.
+
+Dev did NOT match the prediction for the two final-from-result configs,
+and this is the important finding of this run: nq+ffr went 16/31 ->
+14/31 and nq+ffr+po (the previously-reported "best" config) went 19/31
+-> 15/31 -- both REGRESSED on dev despite fixing Q16-19 (month_count,
++4) cleanly as predicted. The reason is NOT the customer-count
+over-filtering mechanism (Q13-15, the actual customer-count template,
+scored fine in every config) -- it's new noise on a different set of
+easy questions (Q4, Q6: "no tool call", the model answers in plain text
+on a category-count question instead of calling a tool; Q10, Q11: "max
+steps reached", a pre-existing join-related struggle that got worse) and
+one medium city-join question flipping wrong. This happened for every
+agent config including plain M2 (dev easy 12/15 -> 9/15), so it's not
+specific to final-from-result either -- the two-sentence SCHEMA addition
+measurably destabilized the model's handling of unrelated easy
+questions on dev, the same general risk CLAUDE.md's M4 section already
+flagged ("any future prompt/tool change must be judged against the full
+set, not just the targeted questions"). My prediction assumed the only
+risk was the already-identified over-filtering mechanism; this shows a
+second, broader, less specific instability that wasn't predicted.
+Net effect: on held-out, the agent (best config) now beats M1b by a
+clearer margin than before (39/60 vs 35/60, a 4-question gap, where
+before the gap was smaller and explicitly called "within noise" at 2/60).
+On dev, the relationship REVERSED: M1b (17/31) now beats the best agent
+config (15/31), where before the agent led clearly (19/31 vs 15/31).
+Nothing about which config "wins" is stable across datasets or across
+this one wording change -- a reason for caution before reporting either
+number as the headline.
+
+2026-11-11: Follow-up investigation into the dev regression above, before
+committing. User asked for the real cause, not just the number: pulled
+M2's (plain config, no flags) saved trajectories for Q4, Q6, Q10, Q11
+directly from data/results_agent.jsonl, and compared against the
+pre-fix version of the same file via `git show HEAD:data/results_agent.jsonl`.
+
+Correction to the note above: Q10/Q11 is NOT a "join-related struggle" --
+there's no join in either question (both are single-table customer
+counts by city). The real bug: the model invents a parameterized-query
+syntax, `WHERE city = ?` plus a separate `bindings` argument, that
+run_sql's tool schema does not accept at all, so every attempt fails
+with the same ProgrammingError regardless of the bindings value. This
+bug already existed PRE-FIX -- old Q11's trajectory shows the identical
+three failed `?`-placeholder attempts before it self-corrected to a
+literal string on step 5 and got the right number (then answered in
+plain text on step 6 instead of calling submit_answer -- which would
+itself have been a no_submit_text failure, just happened not to be
+scored that way at the time). Post-fix, Q10 repeats the same broken
+query for all 8 steps and never recovers; Q11 shows the same pattern.
+So the schema change didn't invent this bug, it just removed whatever
+margin let the model self-correct out of it within the step budget.
+
+Q4/Q6 (no_submit_text): pre-fix trajectories for both are clean --
+run_sql returns the right count, then submit_answer is called with that
+exact value, byte for byte. Post-fix, step 1 is identical (same query,
+same correct result), but step 2 is now a plain-text sentence restating
+the number instead of a tool call. Neither question touches a date or
+a category filter affected by the new schema text -- the only change
+upstream of this is that the SCHEMA string got two sentences longer.
+
+Checked for overlap with the existing "Q4/Q6/Q13 returns 1.0" mystery in
+CLAUDE.md's Next section: there is none, despite the shared IDs. That
+mystery is a different code path entirely -- the --final-from-result
+extra structured-output call, given only {question, last query result},
+no transcript. What's happening here is in the main tool loop itself,
+before any extra call exists. The shared question IDs are coincidental:
+Q4/Q6 are both "plain single-table count" questions, the template most
+exposed to small-number quirks in general, not evidence of one shared
+bug.
+
+Honest conclusion: the most defensible explanation is that this 3B
+model's tool-calling reliability is already marginal (the placeholder
+bug and one plain-text ending existed pre-fix too) and is sensitive to
+prompt length/shape in a way that isn't specific to the added content --
+none of the four affected questions touch MONTH()/YEAR() or dates at
+all. I don't have the instrumentation (token/attention-level inspection)
+to prove the mechanism further than that. Treating this as a model
+robustness limit under added prompt load, not a logic bug to patch, and
+not reporting a more specific cause than I can actually show.
+
+2026-11-11, targeted fix attempt 1 (nudge for Q4/Q6): confirmed --nudge is
+off in all 5 reported configs (grep of src/agent.py's main() -- none pass
+--nudge). Q4/Q6's failure is exactly what --nudge targets: no tool call
+on a step, re-prompt once with NUDGE ("Call submit_answer with your final
+numeric answer now."), see if it recovers on the next step.
+Prediction: --nudge should catch the step-2 plain-text reply on both Q4
+and Q6 and get a correct submit_answer call on step 3, since the model
+already has the right number (77, 67) sitting in the prior tool result --
+it only needs to be told to call the tool, not to recompute anything.
+Running: python -m src.agent --nudge --questions data/scratch/questions_q4q6.jsonl
+
+RESULT: matched the prediction exactly. Q4: steps=3, nudges=1, got=77.0
+(correct). Q6: steps=3, nudges=1, got=67.0 (correct). The nudge message
+on step 2 was enough to make the model call submit_answer with the
+number it already had. 2/2.
+Not yet concluding this is a safe fix to commit -- CLAUDE.md's own M4
+lesson says a flag change must be judged against the full set, not just
+the targeted questions, before trusting it. Full-dev --nudge rerun not
+done yet; flagging as the next check before treating this as resolved.
+
+2026-11-11, full-dev check for --nudge (before committing attempt 1):
+Prediction: --nudge should fix Q4 and Q6 (the no_submit_text cases,
+confirmed above) without touching anything else, since it only fires
+when a step has zero tool calls, and every other dev question's
+trajectory already has a tool call on every step (confirmed by
+inspection in the earlier investigation -- Q10/Q11 fail via a tool-call
+error, not an empty reply, so nudge shouldn't interact with them; the
+over-filtering and decimal-truncation mechanisms are unrelated code
+paths). Expect M2 dev to go from 13/31 to 15/31 (+Q4, +Q6), nothing else
+moving. Running: python -m src.agent --nudge --questions data/questions.jsonl
+
+RESULT: score matched the prediction (13/31 -> 15/31, +2), but the
+mechanism prediction was partly wrong -- I missed that Q24, Q25, and
+Q27 are ALSO no_submit_text cases without --nudge (not surfaced in the
+earlier Q4/Q6/Q10/Q11-only investigation, since the task scope was
+those four). With --nudge, all three get nudged (nudges=1) but stay
+wrong -- Q24 got=8194.0 vs expected 15603.82 (nudged into a
+wrong_after_recovery-style truncation failure), Q25 got=0.0 vs expected
+13 (silent_wrong, likely a dropped filter), Q27 got=0.0 vs expected 5
+(silent_wrong, same pattern). So nudge didn't just fix two questions
+cleanly in isolation -- it converted 5 no_submit_text cases into
+responses, 2 of which turned correct (Q4, Q6) and 3 of which turned
+wrong-by-a-different-mechanism (still 0 net change for those 3, since
+they were already wrong). No previously-correct question regressed --
+checked every row against the pre-nudge M2 dev result
+(Q1,5,7,8,9,12-19 all still OK, unchanged). Net: a clean, real +2 with
+no side effects on correctness, even though the nudge mechanism fired
+on more questions than predicted. Confirms --nudge is worth keeping on
+for this failure type specifically; still need to check held-out before
+fully committing, and Q10/Q11 (attempt 2) are untouched by this (they
+fail via tool-call errors, not empty replies, exactly as predicted).
+
+2026-11-11, held-out check for --nudge (before calling attempt 1 done):
+Prediction: same mechanism, same expectation -- --nudge only fires on
+steps with zero tool calls, so it should recover any held-out
+no_submit_text cases (M2 held-out currently has 8, per the Failure
+types table) the same way it did on dev: some flip to correct, some
+flip to a different wrong-answer mechanism, none of the 28 currently-
+correct questions should regress. Expect M2 held-out to move from
+28/60 upward by however many of those 8 no_submit_text cases are simple
+"had the right number, didn't call the tool" like Q4/Q6, and no
+previously-correct question to break.
+Running: python -m src.agent --nudge --questions data/questions_heldout.jsonl
+
+RESULT: 28/60 -> 32/60, +4, no regressions -- checked every row against
+the pre-nudge M2 held-out result file. The 8 no_submit_text cases
+(Q45, 48, 49, 50, 51, 53, 54, 55, all "got=None" before) split exactly
+like dev did: Q45, 53, 54, 55 flipped to correct (the model already had
+the right number from run_sql, nudge got it to call submit_answer).
+Q48, 49, 50, 51 flipped to a different wrong-answer mechanism (got=0.0
+instead of None -- silent_wrong, likely the same dropped-filter pattern
+as dev's Q25/Q27) but were already wrong, so no net change for those 4.
+Every previously-correct row (1-14, 22, 26-34, 43, 44, 46, 47) stayed
+correct, same values. Clean, same pattern as dev: --nudge is a real fix
+for no_submit_text with zero observed side effects on either dataset.
+Decision: committing attempt 1 (--nudge added to the reported
+configuration set) as a real fix, not just a documented limit. Moving
+to attempt 2 (Q10/Q11, the placeholder/bindings bug) next.
+
+2026-11-11, targeted fix attempt 2 (Q10/Q11 placeholder/bindings bug):
+chose to edit the TOOLS schema's "sql" parameter description, not
+SYSTEM -- SYSTEM is already the thing that got longer and caused the
+no_submit_text/ran_out_of_steps instability we're investigating, so
+adding more text there to fix a different bug risks the same failure
+mode. The tool schema description is narrower and more targeted to
+exactly this constraint (how to call run_sql), so it's where this
+belongs. Changed: "sql": {"type": "string", "description": "A single
+SQLite SELECT statement."} -> "... with every value written directly
+into the SQL as a literal -- never use a placeholder like '?' or a
+separate bindings/parameters argument; this tool takes one complete
+SQL string and nothing else."
+Prediction: this should stop the model from reaching for `?` syntax on
+Q10/Q11 and get it to write the literal city name directly, recovering
+both within budget. Testing on just Q10/Q11 first (same two-question
+subset pattern as attempt 1), nudge left on from attempt 1 since that's
+now the committed baseline. Running: python -m src.agent --nudge
+--questions data/scratch/questions_q10q11.jsonl
+
+RESULT: no effect at all. Q10 and Q11 both still "max steps reached",
+0/2, and the trajectory is byte-for-byte identical to before the edit
+-- step 1 on both is still `SELECT COUNT(*) FROM customers WHERE city
+= ?`. The model doesn't appear to read, or doesn't weight, the tool
+parameter description at all for this behavior; adding the constraint
+there did nothing to stop it from reaching for '?' syntax.
+Per the stopping rule set in advance: this attempt did nothing, so
+falling back to the honest documented explanation rather than trying
+a third wording. Reverted the TOOLS schema edit in src/agent.py (no
+reason to keep dead prompt text that had zero measured effect) and
+deleted the scratch result files for this attempt. Q10/Q11 (and the
+broader dev tool-calling instability from the schema-length change)
+stays as a documented, unfixed model-capability limit -- see CLAUDE.md
+"Known issue" bullet (2026-11-11 entry) for the full writeup.
+
+Decision: committing now with --nudge added to the reported
+configuration set (a real, validated fix) and the Q10/Q11 placeholder
+bug left as a documented limit (two targeted attempts tried, one
+helped, one did nothing -- not continuing to chase wording on this one
+per the same model-capability-limit reasoning used for the
+customer-count over-filtering issue).
+
+2026-11-11, folding --nudge into all 4 agent configs, both datasets
+(8 runs total; M2+nudge dev/held already run above: 15/31, 32/60).
+Prediction, config by config:
+- normalize-quotes+nudge: identical mechanism to M2 (quotes don't
+  affect Q4/Q6/Q24/Q25/Q27, none of them contain string literals with
+  smart quotes), so expect the same +2 dev (13->15) and +4 held
+  (28->32) as M2.
+- nq+ffr+nudge (final-from-result, NOT precision-only): this is the
+  risky one. final_from_result always makes the extra re-derivation
+  call when a question has a whole-number last_sql_output, regardless
+  of whether submit_answer's own value was right -- and that's the
+  exact mechanism that turned Q4/Q6/Q13 into 1.0 in the M4 investigation
+  (attempt 4, before --precision-only existed). Once nudge recovers a
+  real submit_answer call for Q4/Q6, final_from_result will fire on
+  them too (no precision_only to skip it), so I predict they do NOT
+  net-gain here -- they likely flip from "no tool call" to "got=1.0",
+  still wrong, just a different wrong number. Expect dev to stay close
+  to 14/31, possibly +0 net from nudge (gains on Q4/Q6 cancelled by the
+  1.0 mechanism), and held-out to gain on whichever recovered questions
+  have a non-whole-number result (so the 1.0 mechanism doesn't apply).
+- nq+ffr+po+nudge (adds precision-only): Q4/Q6's query result ([(77,)],
+  [(67,)]) is a whole number, so precision_only skips the extra call
+  entirely once nudge gets a real submit_answer -- expect this one to
+  cleanly gain like M2, i.e. dev 15->17, held 39->43, roughly matching
+  the M2/normalize-quotes-style clean recovery.
+Running all 6 remaining: normalize-quotes dev/held,
+normalize-quotes+final-from-result dev/held,
+normalize-quotes+final-from-result+precision-only dev/held, each with
+--nudge added.
+
+RESULTS so far:
+- normalize-quotes+nudge: dev 15/31, held 32/60 -- matches M2+nudge
+  exactly, as predicted (quotes don't interact with these questions).
+- nq+ffr+nudge (no precision-only): dev 14/31 (unchanged from 14/31
+  without nudge) -- Q4 and Q6 DID flip from "no tool call" to
+  got=1.0, exactly the predicted 1.0-mystery collision, net zero gain,
+  confirming the risk. Held-out: 33/60 -> 37/60, +4 (Q45, 53, 54, 55),
+  clean, no regressions -- confirmed by diffing against the saved
+  pre-nudge file row by row. Notable and NOT predicted: Q45/53/54/55
+  all have whole-number query results (12, 4, 5, 5) and final_from_result
+  handled them correctly, unlike Q4/Q6 on dev which hit the 1.0 bug on
+  their own whole-number results (77, 67). So "whole number result"
+  alone doesn't trigger the 1.0 mystery -- something more specific to
+  Q4/Q6/Q13's template or phrasing does. Still unexplained, but this is
+  new evidence for that open question in CLAUDE.md.

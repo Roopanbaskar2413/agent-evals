@@ -4,14 +4,15 @@ from src.inspect_trajectories import classify
 
 CONFIGS = [
     ("M1b", "data/results_baseline_sql.jsonl", "data/results_baseline_sql_heldout.jsonl"),
-    ("M2", "data/results_agent.jsonl", "data/results_agent_heldout.jsonl"),
-    ("normalize-quotes", "data/results_agent_normalizequotes.jsonl",
-     "data/results_agent_normalizequotes_heldout.jsonl"),
-    ("normalize-quotes+final-from-result", "data/results_agent_normalizequotes_finalfromresult.jsonl",
-     "data/results_agent_normalizequotes_finalfromresult_heldout.jsonl"),
-    ("normalize-quotes+final-from-result+precision-only",
-     "data/results_agent_normalizequotes_finalfromresult_precisiononly.jsonl",
-     "data/results_agent_normalizequotes_finalfromresult_precisiononly_heldout.jsonl"),
+    ("M2+nudge", "data/results_agent_nudge.jsonl", "data/results_agent_nudge_heldout.jsonl"),
+    ("normalize-quotes+nudge", "data/results_agent_nudge_normalizequotes.jsonl",
+     "data/results_agent_nudge_normalizequotes_heldout.jsonl"),
+    ("normalize-quotes+final-from-result+nudge",
+     "data/results_agent_nudge_normalizequotes_finalfromresult.jsonl",
+     "data/results_agent_nudge_normalizequotes_finalfromresult_heldout.jsonl"),
+    ("normalize-quotes+final-from-result+precision-only+nudge",
+     "data/results_agent_nudge_normalizequotes_finalfromresult_precisiononly.jsonl",
+     "data/results_agent_nudge_normalizequotes_finalfromresult_precisiononly_heldout.jsonl"),
 ]
 DIFFICULTIES = ("easy", "medium", "hard")
 FAILURE_TYPES = ("no_submit_text", "ran_out_of_steps", "gave_up_after_errors",
