@@ -849,3 +849,299 @@ config is deterministic across reruns, so 24/60 is not a lucky single
 draw. The earlier flip observation either doesn't apply to this exact
 config or needs a prompt/trajectory-level check (not just correctness)
 to resurface.
+
+2026-11-10  Fixed the missing-year schema gap: src/db_tools.py SCHEMA's
+Notes line now reads "order_date is YYYY-MM-DD text, all from 2026."
+instead of just "order_date is YYYY-MM-DD text." No other change to the
+file. Both src/baseline_sql.py and src/agent.py import SCHEMA from here,
+so one fix covers both.
+Prediction: dev score (M1b, 31 questions) stays at 15/31, unchanged. The
+dev set never exercised the missing year -- per CLAUDE.md, the model
+always reached for MONTH() on dev questions, which errors visibly and
+gets retried/fails for other reasons, never silently guesses a wrong
+year via LIKE. This is a sanity check that the schema edit doesn't
+regress dev, not a test of the fix itself (the fix targets a held-out-only
+failure mode).
+
+RESULT: prediction WRONG. Dev (M1b) went 15/31 -> 18/31 (easy 15/15->14/15,
+medium 0/9->4/9, hard 0/7->0/7 unchanged). Two things happened, not the
+one predicted:
+- Q16-19 ("orders placed in <month>") flipped from wrong to correct. With
+  the year in the schema, the model wrote `order_date LIKE '2026-<month>-%'`
+  directly instead of reaching for MONTH() (which errors) or guessing a
+  wrong year silently -- so the dev set DID exercise the gap after all,
+  just not in the way CLAUDE.md described (MONTH()-first only applied to
+  some medium questions, not all four month-filter ones).
+- Q14 ("How many orders did Customer 12 place?", plain count, no date or
+  status in the question) flipped from correct to wrong: the model added
+  unprompted `AND status = 'delivered' AND order_date BETWEEN
+  '2026-01-01' AND '2026-12-31'` filters that don't belong, got 3.0
+  instead of 4. A new regression caused by the extra schema context
+  itself, not a fix side effect -- the one-line change shifted behavior
+  on an unrelated question that never needed the year.
+Net dev effect is positive (+3) but the fix is not a free lunch.
+Next: rerun month_count and month_sum on held-out (the only 2 of the 5
+always-0 templates that are actually date-filter questions -- see
+CLAUDE.md) to check whether the fix generalizes the way it did here, and
+whether a Q14-style regression shows up in templates that don't involve
+dates.
+
+2026-11-10  Held-out check of the schema fix: ran M1b against a 30-question
+subset of data/questions_heldout.jsonl (data/scratch/questions_heldout_yearcheck.jsonl,
+ids 1-14 + 27-42) covering month_count (27-34), month_sum (35-42), and the
+customer-count template (1-14, same shape as dev's Q14 that regressed).
+Before (already committed, data/results_baseline_sql_heldout.jsonl):
+customer-count 14/14, month_count 0/8 (mix of MONTH() errors and silent
+LIKE-wrong-year 0.0), month_sum 0/8 (all MONTH() errors, never reached a
+LIKE guess).
+Prediction: month_count flips to mostly/all correct (8/8 or close),
+mirroring dev Q16-19's clean 0/4 -> 4/4 flip. month_sum also flips to
+mostly/all correct, extending the same LIKE-instead-of-MONTH() pattern
+from COUNT to SUM, even though on held-out it never previously reached
+the LIKE guess (always erred on MONTH() first). customer-count: expect
+mostly unchanged at 14/14, but NOT a confident 14/14 -- dev showed one
+unprompted-filter regression (Q14) from this exact one-line schema
+change, so I would not be surprised by 1-2 flips here.
+
+RESULT (M1b, data/scratch/results_baseline_sql_heldout_yearcheck.jsonl): 20/30.
+customer-count 13/14 (down from 14/14) -- Q1 is the SAME Q14-style
+regression, verbatim: model added unprompted `AND status = 'delivered'
+AND order_date BETWEEN '2026-01-01' AND '2026-12-31'` to a plain
+customer-count question, got 0.0 instead of 1. Prediction confirmed:
+this is a real, repeatable template-level regression, not a one-off.
+month_count 6/8 (up from 0/8) -- all 4 previously-silent-0.0 LIKE-wrong-
+year questions (28,31,32,33) now correct as predicted, PLUS 2 of the 4
+previously-MONTH()-erroring questions (29,30) also switched to a correct
+LIKE query this time (unpredicted bonus -- M1b is a single one-shot call,
+so which strategy it picks varies by question even at temperature 0).
+Questions 27 and 34 still write `MONTH(order_date)` (now paired with a
+new `YEAR(order_date) = 2026`, also nonexistent) and still error --
+the fix does nothing when the model reaches for MONTH() in the first
+place, since M1b never retries.
+month_sum 1/8 (up from 0/8) -- prediction WRONG for this template. Only
+Q41 switched to a correct LIKE query; the other 7 still write
+`MONTH(order_date) = N AND YEAR(order_date) = 2026` and error, unchanged
+from before. SUM aggregation questions reach for MONTH()/YEAR() far more
+reliably than COUNT questions do, so the fix barely touches month_sum.
+Conclusion: the schema fix reliably repairs the SILENT-WRONG-YEAR failure
+mode (LIKE with a guessed wrong year) wherever the model would have used
+it, but does nothing for the separate MONTH()-reaching failure mode,
+which dominates month_sum. It also reproduces the Q14-style unprompted-
+filter regression on a second, independent customer-count question.
+
+Prediction (best agent config, normalize-quotes+final-from-result+
+precision-only, same 30-question subset): before (already committed,
+data/results_agent_normalizequotes_finalfromresult_precisiononly_heldout.jsonl)
+customer-count 14/14, month_count 0/8 (wrong numbers, not all
+ran-out-of-steps), month_sum 0/8 (all `got=None` -- ran out of steps
+without ever submitting). Expect month_count and month_sum to both
+improve somewhat, more than M1b's month_sum result, since the agent can
+retry after a MONTH() error and the year hint should steer it toward a
+working LIKE query faster, within MAX_STEPS=8 -- but I do NOT expect a
+clean fix given M1b's month_sum barely moved (1/8). Expect customer-count
+to possibly regress by 1 question, same unprompted-filter mechanism as
+M1b's Q1 and dev's Q14, since the agent uses the same SYSTEM/SCHEMA text.
+
+RESULT (best agent config,
+data/scratch/results_agent_normalizequotes_finalfromresult_precisiononly_heldout_yearcheck.jsonl):
+14/30, unchanged from 14/30 before. Prediction WRONG on direction for
+month_count/month_sum (no improvement at all) and wrong on
+customer-count (no regression, stayed 14/14 clean).
+customer-count 14/14 (unchanged) -- no repeat of the M1b/dev
+unprompted-filter regression here.
+month_count 0/8 (unchanged score, but the failure mode got WORSE): 7 of
+8 are now "no tool call" (model answers in plain text, which the strict
+grader counts as an immediate failure with no retry), versus wrong
+numeric submit_answer calls before. Trajectory for Q27 shows why: step 1
+tries `MONTH(order_date)=2 AND YEAR(order_date)=2026` (MONTH() errors),
+step 2 tries `SUBSTR(...) = 02 AND YEAR(order_date) = 2026` (YEAR()
+ALSO doesn't exist in SQLite -- a second invented function, directly
+caused by giving the model a concrete year to reach for), step 3 drops
+the year and gets an unquoted numeric '02' comparison against a text
+column (SUBSTR returns '02', compared to integer 2, no match, 0 rows),
+step 4 gives up with a plain-text "the answer is 0" instead of calling
+submit_answer. The year hint handed the model a second nonexistent
+SQLite function to try, burning retry steps it didn't burn before.
+month_sum 0/8 (unchanged score, failure mode also shifted): before, all
+8 ran out of steps (got=None) without ever submitting; after, 5 of 8
+submit a wrong 0.0 and 3 still run out of steps -- same net failure,
+different shape.
+Conclusion: for the tool-looping agent (which can already retry past a
+MONTH() error), the schema fix has ~zero net benefit on this subset --
+same score before and after -- and actively introduces a new failure
+path (inventing YEAR() the same way it previously invented MONTH(),
+now with a specific year to hand to it) that costs retry budget. The
+fix helps the one-shot baseline (M1b) more than it helps the agent,
+because M1b never gets the chance to spend a second step on YEAR()
+before giving up.
+
+2026-11-10  Iterated on the schema wording rather than committing the
+first version. Added a second Notes sentence to SCHEMA (src/db_tools.py):
+"SQLite has no MONTH() or YEAR() function -- filter by month with
+order_date LIKE '2026-03-%' (for March), not MONTH()/YEAR()." Kept the
+"all from 2026" sentence from the first attempt. Picked the LIKE pattern
+specifically (not strftime or substr) because it's what src/make_questions.py
+and src/make_questions_heldout.py already use to compute ground truth, and
+it's exactly the pattern that worked whenever M1b used it in the last
+test run. Did NOT touch the customer-count over-filtering regression --
+tracked separately in CLAUDE.md's Next section as a known issue, since
+it's a general over-filtering problem (unprompted status/date filters on
+questions that mention neither), not a date-parsing problem, and this
+change doesn't address its cause.
+Prediction, same 30-question subset (data/scratch/questions_heldout_yearcheck.jsonl),
+against the previous iteration's results (M1b 20/30: customer-count
+13/14, month_count 6/8, month_sum 1/8; agent 14/30: customer-count 14/14,
+month_count 0/8, month_sum 0/8):
+- M1b month_count: improves further, toward 8/8 -- explicit LIKE guidance
+  replaces the ambiguous year hint that let the model still reach for
+  MONTH()/YEAR() on 2 of 8 questions.
+- M1b month_sum: improves substantially from 1/8 -- the previous fix
+  barely touched SUM questions because the model kept reaching for
+  MONTH()/YEAR() regardless of aggregation function; telling it not to
+  should apply equally to COUNT and SUM.
+- M1b customer-count: unchanged at ~13/14 -- this fix doesn't touch the
+  cause of that regression, so no reason to expect it to recover.
+- Agent month_count: improves from 0/8, plausibly to 4-8/8 -- the
+  specific failure mode last time was inventing YEAR() as a second
+  doomed attempt before giving up; explicit guidance should stop that
+  and let it converge within MAX_STEPS more often.
+- Agent month_sum: improves from 0/8 for the same reason.
+- Agent customer-count: stays 14/14 -- no regression was observed here
+  last time, and this change doesn't add new status/date-adjacent text
+  that would plausibly trigger one.
+
+RESULT (M1b, data/scratch/results_baseline_sql_heldout_yearcheck.jsonl): 16/30.
+month_count 8/8 (up from 6/8) and month_sum 8/8 (up from 1/8) --
+prediction correct, full fix for both date templates once the model is
+told not to use MONTH()/YEAR() and shown the LIKE pattern directly.
+customer-count 0/14 (down from 13/14) -- prediction WRONG, and badly:
+every single customer-count question now adds BOTH an unprompted
+`status = 'delivered'` filter AND an unprompted `order_date LIKE
+'2026-%-%'` filter, e.g. `SELECT COUNT(*) FROM orders WHERE customer_id
+= 2 AND status = 'delivered' AND order_date LIKE '2026-%-%'` for "How
+many orders did Customer 2 place?" (no status or date in the question).
+This is the known over-filtering issue (CLAUDE.md Next section) made
+MUCH worse by this specific wording choice: giving a concrete LIKE
+example (`order_date LIKE '2026-03-%'`) didn't just teach the model the
+right date pattern, it primed it to reach for a LIKE-style date filter
+on every question, date-related or not. The fix for month_count/
+month_sum and the regression on customer-count are the same mechanism
+pulling in opposite directions.
+
+RESULT (best agent config,
+data/scratch/results_agent_normalizequotes_finalfromresult_precisiononly_heldout_yearcheck.jsonl):
+30/30 -- clean sweep, prediction directionally right but better than
+expected on month_count/month_sum (8/8 each, not just 4-8/8) and exactly
+right on customer-count (14/14, no regression). Checked the customer-count
+trajectories directly (Q1, Q2): the agent writes a plain `SELECT
+COUNT(*) FROM orders WHERE customer_id = N` with no extra filters at
+all, unlike M1b's one-shot call on the identical SCHEMA text. So the
+over-filtering regression is not purely a SCHEMA-text problem -- it
+depends on the surrounding prompt too (M1b's "schema in prompt, write
+one query" framing vs. the agent's "call run_sql, look at the result,
+retry if it looks wrong" framing), which is worth remembering before
+assuming any future SCHEMA change will affect both configs the same way.
+Net: for the agent, this iteration is an unambiguous improvement with no
+observed downside on this 30-question subset. For M1b, it trades a
+small, template-specific regression (customer-count, already a tracked
+known issue) for a much larger fix (all 16 date-filter questions).
+
+2026-11-10  Iteration 3: dropped the concrete worked LIKE example
+(iteration 2's `order_date LIKE '2026-03-%'`), suspected cause of the
+M1b customer-count collapse to 0/14 -- it primed the model to reach for
+a date filter on every question, not just date ones. New SCHEMA Notes
+sentence: "SQLite has no MONTH() or YEAR() function. When a question
+asks about a specific month or date range, filter using
+substr(order_date, 1, 4) for year or substr(order_date, 6, 2) for month
+-- otherwise don't add a date filter." Two changes at once from
+iteration 2: (a) explicit "otherwise don't add a date filter" condition,
+aimed directly at the over-filtering regression, and (b) substr instead
+of a worked LIKE example, since the worked example itself was implicated.
+Kept "all from 2026".
+Prediction, same 30-question subset, against iteration 2's results
+(M1b 16/30: customer-count 0/14, month_count 8/8, month_sum 8/8; agent
+30/30 clean):
+- M1b customer-count: substantial recovery, plausibly back to 13-14/14
+  -- the explicit "otherwise don't add a date filter" condition targets
+  this regression directly, unlike iteration 2 which had no such guard.
+- M1b month_count/month_sum: NOT confident these stay at 8/8. Two risks:
+  conditional phrasing is less directive than a worked example, and
+  substr is untested syntax here (LIKE is what iteration 2 proved works
+  and what the ground-truth generator itself uses). Plausible partial
+  regression back toward iteration 1's levels (month_count ~6-8/8,
+  month_sum ~1-8/8) if the model doesn't reliably apply substr correctly
+  or still reaches for MONTH()/YEAR() on some questions.
+- Agent: expect it stays at or near 30/30 -- it already handled the
+  month templates perfectly with iteration 2's wording, and the tool
+  loop can retry past a malformed substr query even if the first
+  attempt is off, unlike M1b's single shot.
+If this version keeps month_count/month_sum near 8/8 for both configs
+AND recovers customer-count without reintroducing the regression, this
+is the version to commit. If not, per instruction: stop iterating on
+wording alone and document this as a model-capability limit, not a
+prompt problem to keep chasing.
+
+RESULT (M1b, data/scratch/results_baseline_sql_heldout_yearcheck.jsonl): 9/30,
+down from iteration 2's 16/30. Prediction WRONG on every count:
+customer-count 7/14 (partial recovery from 0/14, but nowhere near the
+original 13-14/14, and the mechanism didn't actually go away -- Q1 still
+has an unprompted `status = 'delivered' AND order_date >= '2026-01-01'
+AND order_date < '2027-01-01'` tacked onto a plain count question, now
+phrased as a range instead of iteration 2's LIKE). month_count 2/8
+(down hard from 8/8) and month_sum 0/8 (down from 8/8) -- the
+conditional "when a question asks about a specific month... otherwise
+don't add a date filter" phrasing backfired in a new way: the model now
+also adds an UNPROMPTED STATUS FILTER to month questions that never
+mention status, e.g. Q28 `substr(order_date, 6, 2) = '03' AND status !=
+'cancelled'` and Q35 `... AND status = 'delivered' AND order_date >=
+'2026-02-01' AND order_date < '2026-03-01'` for "total amount of orders
+placed in February" (no status mentioned). The "when X, do Y, otherwise
+don't" framing seems to have generalized into permission to add
+conditional filters generally, not just date ones -- worse than either
+prior iteration, and in a new dimension (status) that iteration 2 never
+touched.
+RESULT (best agent config): run CRASHED (did not complete) --
+`ValueError: could not convert string to float: 'None'` on question 35,
+an uncaught exception in agent.py's `answer()` (get_arg/float(value)
+path) when submit_answer is called with the literal string "None"
+instead of a number. This is a pre-existing gap in error handling
+(unrelated to SCHEMA wording specifically, but only surfaced because
+this wording made the model produce a kind of bad output the harness
+had never seen before), NOT something fixed here -- out of scope for a
+SCHEMA-only change per the plan for this iteration. Partial output
+before the crash already showed clear regression: 6 of the 14
+customer-count questions returned "no tool call" (worse than iteration
+2's clean 14/14), and the month templates were timing out
+(max-steps-reached) or giving up, not converging like iteration 2's 8/8
++ 8/8.
+Conclusion: iteration 3 does NOT cleanly separate the date fix from the
+over-filtering regression -- it makes both worse simultaneously, for
+both configs, and exposes a new crash bug on top. Per the stated
+stopping rule, this is now a model-capability limit (a 3B model
+reliably treats "mention date filtering" and "mention a conditional
+filter" as license to add filters it wasn't asked for, regardless of
+the specific wording used to scope that guidance) rather than a prompt
+problem worth continuing to chase by rewording. Reverting to iteration
+2's wording (concrete LIKE example, no "otherwise" clause) as the
+best-available version: it gave the agent a clean 30/30 and gave M1b a
+real net fix (8/8 + 8/8 on dates) at the cost of a known, already-
+tracked regression on one template (customer-count, M1b only).
+
+Final sanity check, `make demo` (rebuilds db + dev questions, runs M1b
+dev) against the reverted-to-iteration-2 SCHEMA: dev M1b 15/31 -> 17/31
+(easy 15/15->12/15, medium 0/9->4/9, hard 0/7->1/7). Confirms the same
+pattern seen on held-out, now on dev too: Q16-19 (month_count template)
+all fixed (0/4->4/4), but Q13/14/15 (customer-count template) all
+regressed with the exact same unprompted `status = 'delivered' AND
+order_date LIKE '2026-%-%'` filter -- 3 dev questions, not just the 1
+(Q14) seen under iteration 1. Q25 flipped to correct by chance (a
+join query that happened to keep its category filter this run); Q26/27
+still drop the category filter, a separate pre-existing bug, unrelated.
+Net dev effect: +2 (15/31 -> 17/31). data/results_baseline_sql.jsonl
+(the official dev M1b result file) now reflects this SCHEMA.
+Caveat: only M1b's dev set and a 30-question held-out subset were
+re-run under the final SCHEMA in this session. The full pre-registered
+5-configuration suite (CLAUDE.md "Results so far" table, README's
+generated tables) still reflects the PRE-FIX SCHEMA and has not been
+regenerated -- flagged in CLAUDE.md's Next section as outstanding work,
+not done here.

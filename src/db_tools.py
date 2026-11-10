@@ -5,7 +5,8 @@ DB_URI = "file:data/shop.db?mode=ro"
 SCHEMA = """Tables:
 customers(id INTEGER, name TEXT, city TEXT)
 orders(id INTEGER, customer_id INTEGER, category TEXT, amount REAL, status TEXT, order_date TEXT)
-Notes: status is one of delivered, cancelled, pending. order_date is YYYY-MM-DD text.
+Notes: status is one of delivered, cancelled, pending. order_date is YYYY-MM-DD text, all from 2026.
+SQLite has no MONTH() or YEAR() function -- filter by month with order_date LIKE '2026-03-%' (for March), not MONTH()/YEAR().
 orders.customer_id = customers.id. Customer names look like 'Customer 12' where 12 is the id."""
 
 
